@@ -12,6 +12,7 @@ from readdraw.epub import EpubDocument
 from readdraw.storage import Store
 from readdraw.sync_server import create_app
 from readdraw.updater import parse_release, version_tuple
+from readdraw.window_drop import DROP_PORT, NativeDropBridge
 
 
 class CoreServiceTests(unittest.TestCase):
@@ -84,6 +85,10 @@ class CoreServiceTests(unittest.TestCase):
                 "body": "修复问题",
                 "assets": [
                     {
+                        "name": "ReadDraw-Setup-v0.0.1.exe",
+                        "browser_download_url": "https://example.test/ReadDraw-Setup.exe",
+                    },
+                    {
                         "name": "ReadDraw-v0.0.1-windows-x64.exe",
                         "browser_download_url": "https://example.test/ReadDraw.exe",
                     }
@@ -93,6 +98,10 @@ class CoreServiceTests(unittest.TestCase):
         self.assertIsNotNone(release)
         self.assertEqual(release.asset_name, "ReadDraw-v0.0.1-windows-x64.exe")
         self.assertEqual(release.version, "0.0.1")
+
+    def test_windows_drop_contract(self) -> None:
+        self.assertEqual(DROP_PORT, 47831)
+        self.assertTrue(callable(NativeDropBridge.start))
 
 
 if __name__ == "__main__":

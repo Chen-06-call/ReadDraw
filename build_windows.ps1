@@ -20,10 +20,16 @@ if (-not (Test-Path -LiteralPath $flet)) {
 }
 $resource_prep = "import pymupdf, shutil; from pathlib import Path; shutil.copytree(Path(pymupdf.__file__).parent / 'layout' / 'resources', Path('.build-resources/pymupdf/layout/resources'), dirs_exist_ok=True)"
 python -c $resource_prep
+$iconPath = Join-Path (Get-Location) "assets\ReadDraw.ico"
+if (-not (Test-Path -LiteralPath $iconPath)) {
+    throw "Application icon not found: $iconPath"
+}
 $arguments = @(
-    "pack", "main.py", "--name", "ReadDraw", "--distpath", "dist", "--yes",
+    "pack", "main.py", "--name", "ReadDraw", "--icon", $iconPath, "--distpath", "dist", "--yes",
     "--hidden-import", "pymupdf.layout",
-    "--add-data", ".build-resources/pymupdf/layout/resources;pymupdf/layout/resources"
+    "--add-data", ".build-resources/pymupdf/layout/resources;pymupdf/layout/resources",
+    "--add-binary", "native/drop_helper.exe;.",
+    "--add-binary", "native/drop_hook.dll;."
 )
 if ($OneDir) {
     $arguments += "--onedir"
@@ -55,5 +61,13 @@ $manifest = [ordered]@{
     release_url = "https://github.com/Chen-06-call/ReadDraw/releases/tag/v$normalizedVersion"
 }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releaseDirectory "update.json") -Encoding utf8
+$makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+if ($makensis) {
+    $installerScript = Join-Path (Get-Location) "installer\ReadDraw.nsi"
+    & $makensis.Source "/DAPP_VERSION=$normalizedVersion" "/DEXE_PATH=$sourceExe" $installerScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "NSIS installer build failed."
+    }
+}
 Write-Host "ReadDraw package created: $sourceExe"
 Write-Host "Release assets created under $releaseDirectory"

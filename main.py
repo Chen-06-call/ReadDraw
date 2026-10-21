@@ -17,6 +17,7 @@ from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
 from readdraw.updater import ReleaseInfo, check_latest_release, download_update, is_packaged, schedule_windows_replace
 from readdraw.version import APP_TAG, APP_VERSION
+from readdraw.window_drop import NativeDropBridge
 
 
 class ReadDrawApp:
@@ -40,8 +41,9 @@ class ReadDrawApp:
         self.image = ft.Image(src="", fit=ft.BoxFit.CONTAIN, border_radius=4)
         self.canvas_host = ft.Container(expand=True, alignment=ft.Alignment.CENTER, bgcolor="#E8ECF1", border_radius=8,
             content=ft.Column([ft.Icon(ft.Icons.MENU_BOOK_ROUNDED, size=54, color="#8B95A5"),
-                ft.Text("导入一本 PDF 开始阅读", size=20, weight=ft.FontWeight.W_600, color="#344054"),
-                ft.Text("你的阅读进度和页码绘画会自动保存在本机", color="#667085")],
+                ft.Text("打开或拖入 PDF / EPUB 开始阅读", size=20, weight=ft.FontWeight.W_600, color="#344054"),
+                ft.Text("支持点击下方按钮选择文件，也可以把文件直接拖到阅读区域", color="#667085"),
+                ft.FilledButton("打开文件", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=self.open_picker, height=42)],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER, spacing=10))
         self.status = ft.Text("准备就绪", size=12, color="#667085")
         self.page_label = ft.Text("未打开书籍", size=13, color="#475467")
@@ -49,7 +51,9 @@ class ReadDrawApp:
         self.image_picker = ft.FilePicker()
         self.sync_server = SyncServer()
         self.pending_release: ReleaseInfo | None = None
+        self.file_drop = NativeDropBridge(self.on_files_dropped)
         self.build()
+        self.file_drop.start()
 
     def build(self) -> None:
         self.page.title = "ReadDraw · 阅读与绘画笔记"
@@ -58,14 +62,16 @@ class ReadDrawApp:
         self.page.padding = 0
         self.page.window.min_width = 980
         self.page.window.min_height = 680
-        self.page.overlay.append(self.file_picker)
-        self.page.overlay.append(self.image_picker)
+        # FilePicker is a Flet service in 1.x; putting it in overlay leaves
+        # pick_files() without a client listener and causes a timeout.
+        self.page.services.append(self.file_picker)
+        self.page.services.append(self.image_picker)
         self.library_list = ft.ListView(expand=True, spacing=4, padding=ft.Padding.only(top=8))
         self.refresh_library()
         sidebar = ft.Container(width=264, padding=ft.Padding.all(18), bgcolor="#FFFFFF", border=ft.Border.only(right=ft.BorderSide(1, "#E4E7EC")),
             content=ft.Column([ft.Row([ft.Icon(ft.Icons.AUTO_STORIES_ROUNDED, color="#3857D6"), ft.Text("ReadDraw", size=21, weight=ft.FontWeight.W_700, color="#1D2939")], spacing=8),
                 ft.Text("我的书库", size=12, color="#98A2B3", weight=ft.FontWeight.W_600),
-                ft.FilledButton("导入书籍", icon=ft.Icons.UPLOAD_FILE_ROUNDED, on_click=self.open_picker, height=42),
+                ft.FilledButton("打开文件", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=self.open_picker, height=42),
                 ft.OutlinedButton("检查更新", icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, on_click=self.check_updates),
                 ft.Text(f"当前版本 {APP_TAG}", size=11, color="#98A2B3"), self.library_list,
                 ft.Divider(height=1, color="#EAECF0"), ft.Text("第一版 · 本地模式", size=11, color="#98A2B3")], expand=True, spacing=12))
@@ -121,6 +127,14 @@ class ReadDrawApp:
         )
         if files and files[0].path:
             self.import_book(files[0].path)
+
+    def on_files_dropped(self, paths: list[str]) -> None:
+        """Import the first supported document dropped from Windows Explorer."""
+        if paths:
+            self.page.run_task(self._import_dropped_file, paths[0])
+
+    async def _import_dropped_file(self, path: str) -> None:
+        self.import_book(path)
 
     async def check_updates(self, _=None) -> None:
         self.status.value = "正在检查 GitHub Releases..."

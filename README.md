@@ -5,6 +5,7 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 ## 功能
 
 - 导入并管理本地 PDF / EPUB
+- 支持“打开文件”按钮和从 Windows 资源管理器直接拖入阅读区（Windows 桌面版）
 - 记录每本书的阅读页码
 - 画笔、颜色、线条粗细、橡皮擦、撤销和恢复
 - 文字高亮和文字批注，按书籍与页码保存
@@ -51,6 +52,10 @@ python main.py
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成带版本号的 exe、SHA256 校验文件和 `update.json`。如果希望生成便于分发的文件夹版本：
+
+Windows 桌面版随包包含 `native\drop_helper.exe` 和 `native\drop_hook.dll`，用于接收资源管理器拖入的 PDF / EPUB；使用生成的 exe 时不需要另外安装插件。
+
+如果系统安装了 NSIS，脚本还会生成 `release\ReadDraw-Setup-v0.0.0.exe` 安装包。安装包会创建桌面快捷方式，并将程序安装到当前用户目录，不需要管理员权限。
 
 ```powershell
 .\build_windows.ps1 -Version v0.0.0 -OneDir

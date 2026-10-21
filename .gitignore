@@ -7,4 +7,6 @@ build/
 dist/
 release/
 .build-resources/
+.build-deps/
+.gitconfig-flutter
 *.spec
