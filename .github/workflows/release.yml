@@ -1,0 +1,42 @@
+name: Build and release ReadDraw
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build Windows package
+        shell: powershell
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: .\build_windows.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/ReadDraw-*-windows-x64.exe
+            release/ReadDraw-*-windows-x64.exe.sha256
+            release/update.json
