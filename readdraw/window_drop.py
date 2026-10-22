@@ -1,4 +1,4 @@
-"""Windows Explorer drop bridge used by the packaged desktop application."""
+"""已停用的 Windows 拖入桥接实现，避免向 Flutter 窗口注入钩子导致原生崩溃。"""
 
 from __future__ import annotations
 

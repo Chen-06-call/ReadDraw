@@ -34,7 +34,7 @@ def empty_reader(app):
             ft.Container(height=6),
             ft.FilledButton("打开文件", icon=ft.Icons.ADD_ROUNDED,
                             on_click=app.open_picker, height=42),
-            label("也可以把文件直接拖到阅读区域", 11),
+            label("选择本地 PDF / EPUB 文件即可", 11),
         ],
         alignment=ft.MainAxisAlignment.CENTER,
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -51,16 +51,16 @@ def build_toolbar(app):
         on_submit=app.jump_page, border_color=LINE, border_radius=7)
     app.pen_btn = icon_button(ft.Icons.DRAW_OUTLINED, "画笔", lambda e: app.set_tool("pen"), selected=True)
     app.eraser_btn = icon_button(ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_tool("eraser"))
-    app.highlight_btn = icon_button(ft.Icons.HIGHLIGHT_ROUNDED, "文字高亮", lambda e: app.open_text_dialog("highlight"))
-    app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", lambda e: app.open_text_dialog("note"))
+    app.marker_btn = icon_button(ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_tool("marker"))
+    app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", app.open_text_dialog)
     app.image_btn = icon_button(ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED, "插入图片", app.open_image_picker)
     app.sync_btn = icon_button(ft.Icons.LAN_OUTLINED, "局域网同步", app.toggle_sync)
     app.thickness_slider = ft.Slider(min=2, max=16, divisions=7, value=4, width=94,
         active_color=ACCENT, on_change=app.change_thickness, tooltip="画笔粗细")
     tools = ft.Row([
-        app.pen_btn, app.eraser_btn, app.highlight_btn, app.note_btn, app.image_btn,
+        app.pen_btn, app.eraser_btn, app.marker_btn, app.note_btn, app.image_btn,
         ft.VerticalDivider(width=12, color=LINE),
-        ft.Row([app.color_button(c) for c in ("#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")], spacing=3),
+        ft.Row([app.color_button(c) for c in ("#FFEB3B", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")], spacing=3),
         app.thickness_slider,
         ft.Container(expand=True),
         icon_button(ft.Icons.UNDO_ROUNDED, "撤销", app.undo),
@@ -147,8 +147,8 @@ def build_desktop(app):
             ft.Container(height=5), app.progress_text, app.progress_bar,
             ft.Divider(height=28, color=LINE),
             label("本页批注", 12, INK, weight=ft.FontWeight.W_600), app.notes_text,
-            ft.Row([ft.TextButton("高亮", icon=ft.Icons.HIGHLIGHT_ROUNDED, on_click=lambda e: app.open_text_dialog("highlight")),
-                    ft.TextButton("文字", icon=ft.Icons.EDIT_NOTE_ROUNDED, on_click=lambda e: app.open_text_dialog("note"))], spacing=0),
+            ft.Row([ft.TextButton("荧光笔", icon=ft.Icons.HIGHLIGHT_ROUNDED, on_click=lambda e: app.set_tool("marker")),
+                    ft.TextButton("文字", icon=ft.Icons.EDIT_NOTE_ROUNDED, on_click=app.open_text_dialog)], spacing=0),
             app.annotation_list,
             ft.Divider(color=LINE), label("数据保存位置", 10), app.data_path_text,
         ], spacing=10, expand=True),

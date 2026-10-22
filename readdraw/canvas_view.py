@@ -125,8 +125,10 @@ class ReadingCanvas:
         points = [self.transform.to_view(*point) for point in stroke["points"]]
         elements = [cv.Path.MoveTo(*points[0]), cv.Path.LineTo(*points[0])]
         elements.extend(cv.Path.LineTo(*point) for point in points[1:])
+        # 界面与 PNG 导出使用同一份透明度，重启或翻页后荧光笔颜色保持一致。
+        color = ft.Colors.with_opacity(stroke.get("opacity", 1.0), stroke["color"])
         return cv.Path(elements, paint=ft.Paint(
-            color=stroke["color"], stroke_width=stroke["width"] * self.transform.scale,
+            color=color, stroke_width=stroke["width"] * self.transform.scale,
             style=ft.PaintingStyle.STROKE, stroke_cap=ft.StrokeCap.ROUND, stroke_join=ft.StrokeJoin.ROUND))
 
     def set_strokes(self, strokes: list[dict]) -> None:

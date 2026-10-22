@@ -11,8 +11,7 @@ from typing import Any
 from readdraw import config
 from readdraw.diagnostics import configure_logging
 
-# Start native crash capture before importing any third-party DLLs. A windowed
-# build has no console, so crashes during imports would otherwise be invisible.
+# 在导入第三方本机组件前启用崩溃日志；窗口程序没有控制台，日志用于定位启动故障。
 if __name__ == "__main__":
     configure_logging()
 
@@ -20,7 +19,10 @@ import flet as ft
 from PIL import Image as PILImage
 from readdraw.data_location import migrate_data_dir
 from readdraw.canvas_view import ReadingCanvas
-from readdraw.drawing import clone_strokes, compose_page, point_near_stroke
+from readdraw.drawing import (
+    MARKER_COLOR, MARKER_OPACITY, MARKER_WIDTH_MULTIPLIER,
+    clone_strokes, compose_page, point_near_stroke,
+)
 from readdraw.models import Book
 from readdraw.reader import open_document, render_page
 from readdraw.settings_view import create_settings_dialog
@@ -29,7 +31,6 @@ from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
 from readdraw.updater import ReleaseInfo, check_latest_release, download_update, is_packaged, schedule_windows_replace
 from readdraw.version import APP_TAG, APP_VERSION
-from readdraw.window_drop import NativeDropBridge
 
 
 class ReadDrawApp:
@@ -49,6 +50,7 @@ class ReadDrawApp:
         self.active_stroke: dict[str, Any] | None = None
         self.tool = "pen"
         self.color = "#E45756"
+        self.marker_color = MARKER_COLOR
         self.thickness = 4
         self._closed = False
         self._closing = False
@@ -61,7 +63,7 @@ class ReadDrawApp:
         self.settings_path_text = ft.Text(str(config.APP_DIR), size=12, color="#667085", selectable=True)
         self.canvas_host = ft.Container(expand=True, alignment=ft.Alignment.CENTER, bgcolor=self.background_color, border_radius=8,
             content=ft.Column([ft.Icon(ft.Icons.MENU_BOOK_ROUNDED, size=54, color="#8B95A5"),
-                ft.Text("打开或拖入 PDF / EPUB 开始阅读", size=20, weight=ft.FontWeight.W_600, color="#344054"),
+                ft.Text("打开 PDF / EPUB 开始阅读", size=20, weight=ft.FontWeight.W_600, color="#344054"),
                 ft.Text("支持点击下方按钮选择文件，也可以把文件直接拖到阅读区域", color="#667085"),
                 ft.FilledButton("打开文件", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=self.open_picker, height=42)],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER, spacing=10))
@@ -71,9 +73,7 @@ class ReadDrawApp:
         self.image_picker = ft.FilePicker()
         self.sync_server = SyncServer()
         self.pending_release: ReleaseInfo | None = None
-        self.file_drop = NativeDropBridge(self.on_files_dropped)
         self.build()
-        self.file_drop.start()
 
     def build(self) -> None:
         build_desktop(self)
@@ -182,14 +182,6 @@ class ReadDrawApp:
         )
         self.page.show_dialog(dialog)
 
-    def on_files_dropped(self, paths: list[str]) -> None:
-        """Import the first supported document dropped from Windows Explorer."""
-        if paths:
-            self.page.run_task(self._import_dropped_file, paths[0])
-
-    async def _import_dropped_file(self, path: str) -> None:
-        self.import_book(path)
-
     async def check_updates(self, _=None) -> None:
         self.status.value = "正在检查 GitHub Releases..."
         self.status.update()
@@ -279,8 +271,8 @@ class ReadDrawApp:
         self.finish_drawing()
         self.text_annotations = self.store.text_annotations(self.book.id, self.page_index)
         self.attachments = self.store.attachments(self.book.id, self.page_index)
-        quotes = [item.quote for item in self.text_annotations if item.kind == "highlight" and item.quote]
-        self.base_image = render_page(self.document, self.page_index, quotes)
+        # 旧文字高亮仅保留为笔记，不再触发 PDF 原文搜索和重绘。
+        self.base_image = render_page(self.document, self.page_index)
         self.strokes = self.store.get_strokes(self.book.id, self.page_index)
         self.history.clear()
         self.redo_stack.clear()
@@ -314,7 +306,14 @@ class ReadDrawApp:
         if self.erasing:
             self.erase_at(*position)
             return
-        self.active_stroke = {"color": self.color, "width": self.thickness, "points": [list(position)]}
+        is_marker = self.tool == "marker"
+        self.active_stroke = {
+            "tool": self.tool,
+            "color": self.marker_color if is_marker else self.color,
+            "width": self.thickness * MARKER_WIDTH_MULTIPLIER if is_marker else self.thickness,
+            "opacity": MARKER_OPACITY if is_marker else 1.0,
+            "points": [list(position)],
+        }
         self.strokes.append(self.active_stroke)
         self.drawing_view.begin(self.active_stroke)
 
@@ -351,15 +350,24 @@ class ReadDrawApp:
         self.notes_text.update()
 
     def set_tool(self, tool: str) -> None:
+        if tool not in ("pen", "marker", "eraser"):
+            return
+        # 切换工具前提交笔迹，避免荧光笔与普通画笔共用尚未结束的手势。
+        self.finish_drawing()
         self.tool = tool
         self.pen_btn.selected = tool == "pen"
+        self.marker_btn.selected = tool == "marker"
         self.eraser_btn.selected = tool == "eraser"
-        self.pen_btn.update()
-        self.eraser_btn.update()
+        self.thickness_slider.tooltip = "荧光笔粗细（普通画笔的 4 倍）" if tool == "marker" else "画笔粗细"
+        self.status.value = "荧光笔：按住鼠标在书页上涂画" if tool == "marker" else ("橡皮擦" if tool == "eraser" else "画笔")
+        self.page.update()
 
     def set_color(self, color: str) -> None:
-        self.color = color
-        self.set_tool("pen")
+        if self.tool == "marker":
+            self.marker_color = color
+        else:
+            self.color = color
+        self.set_tool("marker" if self.tool == "marker" else "pen")
 
     def change_thickness(self, e: Any) -> None:
         self.thickness = int(e.control.value)
@@ -421,13 +429,12 @@ class ReadDrawApp:
                 )
             )
 
-    def open_text_dialog(self, kind: str) -> None:
+    def open_text_dialog(self, _=None) -> None:
         if not self.book:
             self.show_error("请先打开一本书")
             return
-        quote_field = ft.TextField(label="原文或选段", hint_text="用于定位高亮，可留空", multiline=True, min_lines=2, max_lines=4)
+        quote_field = ft.TextField(label="原文或选段", hint_text="可摘录原文，选填", multiline=True, min_lines=2, max_lines=4)
         content_field = ft.TextField(label="批注内容", hint_text="写下你的想法", multiline=True, min_lines=3, max_lines=6)
-        title = "添加文字高亮" if kind == "highlight" else "添加文字批注"
 
         def save_annotation(_=None) -> None:
             quote = quote_field.value.strip()
@@ -435,13 +442,13 @@ class ReadDrawApp:
             if not content:
                 self.show_error("请输入内容")
                 return
-            self.store.add_text_annotation(self.book.id, self.page_index, kind, content, quote)
+            self.store.add_text_annotation(self.book.id, self.page_index, "note", content, quote)
             self.page.pop_dialog()
             self.load_page()
 
         dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(title),
+            title=ft.Text("添加文字批注"),
             content=ft.Column([quote_field, content_field], tight=True, width=460),
             actions=[ft.TextButton("取消", on_click=lambda e: self.page.pop_dialog()), ft.FilledButton("保存", on_click=save_annotation)],
         )
@@ -467,8 +474,12 @@ class ReadDrawApp:
         self.status.update()
 
     def show_error(self, message: str) -> None:
+        """Show errors in the persistent status bar without opening a native overlay."""
         logging.getLogger("readdraw").error(message)
-        self.page.show_dialog(ft.SnackBar(content=ft.Text(message), bgcolor="#B42318"))
+        # 错误提示留在页面内，避免异常处理再次触发 Flutter 原生浮层。
+        self.status.value = message
+        self.status.color = "#B42318"
+        self.status.update()
 
     def on_window_event(self, event: Any) -> None:
         if event.type == ft.WindowEventType.CLOSE and not getattr(self, "_closing", False):
@@ -479,22 +490,30 @@ class ReadDrawApp:
         if self._closed:
             return
         self._closed = True
-        self.finish_drawing()
-        self.file_drop.stop()
-        self.sync_server.stop()
-        if self.document:
-            self.document.close()
-            self.document = None
-        self.store.close()
+        try:
+            self.finish_drawing()
+        except Exception:
+            logging.getLogger("readdraw").exception("关闭时保存笔迹失败")
+        try:
+            # 等待后台服务退出时不占用界面事件循环。
+            await asyncio.to_thread(self.sync_server.stop)
+        except Exception:
+            logging.getLogger("readdraw").exception("停止局域网同步服务失败")
+        finally:
+            if self.document:
+                self.document.close()
+                self.document = None
+            self.store.close()
         try:
             await self.page.window.destroy()
         except RuntimeError:
-            # The Flet client may already have disconnected during shutdown.
+            # 用户关闭窗口或原生客户端退出时，会话可能先于清理流程断开。
             logging.getLogger("readdraw").info("Window client disconnected during shutdown")
 
 
 async def main(page: ft.Page) -> None:
-    ReadDrawApp(page)
+    # 将控制器绑定到页面生命周期，避免异步回调期间被垃圾回收。
+    page.readdraw_app = ReadDrawApp(page)
 
 
 if __name__ == "__main__":

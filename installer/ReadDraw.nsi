@@ -17,8 +17,6 @@ UninstPage instfiles
 Section "ReadDraw"
   SetOutPath "$INSTDIR"
   File /oname=ReadDraw.exe "${EXE_PATH}"
-  File /nonfatal "..\native\drop_helper.exe"
-  File /nonfatal "..\native\drop_hook.dll"
   WriteRegStr HKCU "Software\ReadDraw" "InstallDir" "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\ReadDraw"

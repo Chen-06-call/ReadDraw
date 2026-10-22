@@ -14,7 +14,6 @@ from readdraw.epub import EpubDocument
 from readdraw.storage import Store
 from readdraw.sync_server import create_app
 from readdraw.updater import parse_release, version_tuple
-from readdraw.window_drop import DROP_PORT, NativeDropBridge
 from readdraw.canvas_view import PageTransform
 from readdraw.canvas_view import ReadingCanvas
 from readdraw import config
@@ -22,6 +21,20 @@ from readdraw.data_location import migrate_data_dir
 
 
 class CoreServiceTests(unittest.TestCase):
+    def test_marker_export_blends_color_without_hiding_text(self) -> None:
+        """半透明荧光笔必须和白纸、黑字混合，导出的纸面仍不透明。"""
+        base = Image.new("RGB", (100, 40), "white")
+        base.putpixel((50, 20), (0, 0, 0))
+        marker = {"color": "#FFEB3B", "opacity": 0.32, "width": 16, "points": [[10, 20], [90, 20]]}
+        exported = compose_page(base, [marker])
+        self.assertEqual(exported.getpixel((20, 20)), (255, 249, 192, 255))
+        self.assertEqual(exported.getpixel((50, 20)), (82, 76, 19, 255))
+        self.assertEqual(exported.getpixel((20, 2)), (255, 255, 255, 255))
+        # 旧笔迹没有透明度字段时仍按实色画笔导出。
+        pen = dict(marker, color="#E45756")
+        pen.pop("opacity")
+        self.assertEqual(compose_page(base, [pen]).getpixel((20, 20)), (228, 87, 86, 255))
+
     def test_store_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "test.sqlite3")
@@ -81,33 +94,31 @@ class CoreServiceTests(unittest.TestCase):
             self.assertGreater(rendered.width, 0)
             self.assertIn("/health", [route.path for route in create_app(":memory:").routes])
 
+    @patch("readdraw.updater.APP_VERSION", "0.0.2")
     def test_update_release_parsing(self) -> None:
+        # 固定旧版本基线，避免每次发布都要修改这组升级协议样例。
         self.assertEqual(version_tuple("v1.2.3"), (1, 2, 3))
         self.assertIsNone(parse_release({"tag_name": "v0.0.0", "assets": []}))
         release = parse_release(
             {
-                "tag_name": "v0.0.2",
+                "tag_name": "v0.0.3",
                 "name": "First update",
                 "body": "修复问题",
                 "assets": [
                     {
-                        "name": "ReadDraw-Setup-v0.0.2.exe",
+                        "name": "ReadDraw-Setup-v0.0.3.exe",
                         "browser_download_url": "https://example.test/ReadDraw-Setup.exe",
                     },
                     {
-                        "name": "ReadDraw-v0.0.2-windows-x64.exe",
+                        "name": "ReadDraw-v0.0.3-windows-x64.exe",
                         "browser_download_url": "https://example.test/ReadDraw.exe",
                     }
                 ],
             }
         )
         self.assertIsNotNone(release)
-        self.assertEqual(release.asset_name, "ReadDraw-v0.0.2-windows-x64.exe")
-        self.assertEqual(release.version, "0.0.2")
-
-    def test_windows_drop_contract(self) -> None:
-        self.assertEqual(DROP_PORT, 47831)
-        self.assertTrue(callable(NativeDropBridge.start))
+        self.assertEqual(release.asset_name, "ReadDraw-v0.0.3-windows-x64.exe")
+        self.assertEqual(release.version, "0.0.3")
 
     def test_canvas_transform_round_trip(self) -> None:
         transform = PageTransform.fit(1000, 2000, 600, 600)

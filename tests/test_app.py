@@ -9,6 +9,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pymupdf
@@ -42,7 +43,6 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
             ATTACHMENTS_DIR=self.root / "library" / "attachments",
             SETTINGS_PATH=self.root / "settings.json",
         ))
-        self.enterContext(patch("main.NativeDropBridge.start"))
         self.connection = RecordingConnection()
         self.session = Session(self.connection)
         self.app = ReadDrawApp(self.session.page)
@@ -96,7 +96,59 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_file_reports_error_without_exiting(self) -> None:
         self.app.import_book(str(self.root / "missing.pdf"))
         self.assertIsNone(self.app.book)
+        self.assertIn("无法打开书籍", self.app.status.value)
+        self.assertEqual(self.app.page._dialogs.controls, [])
         self.assertGreater(len(self.connection.messages), 0)
+
+    async def test_shutdown_tolerates_a_disconnected_window(self) -> None:
+        with patch.object(self.app.page.window, "destroy", new=AsyncMock(side_effect=RuntimeError("Session closed"))):
+            await self.app._close_window()
+        self.assertTrue(self.app._closed)
+        self.assertIsNone(self.app.document)
+
+    async def test_marker_draw_save_reload_and_undo_without_a_dialog(self) -> None:
+        """荧光笔只切换绘画工具，笔迹透明度随页码保存并可撤销。"""
+        self.app.import_book(str(self.create_pdf()))
+        # 模拟客户端消费页面补丁，完成新画布控件的挂载。
+        self.session.get_page_patch()
+        with patch.object(self.app.page, "show_dialog") as show_dialog:
+            self.app.set_tool("marker")
+            self.assertTrue(self.app.marker_btn.selected)
+            self.assertFalse(self.app.pen_btn.selected)
+            show_dialog.assert_not_called()
+
+        transform = self.app.drawing_view.transform
+        def pointer(x, y):
+            return SimpleNamespace(local_x=transform.to_view(x, y)[0], local_y=transform.to_view(x, y)[1])
+
+        await self.app.start_stroke(pointer(40, 50))
+        await self.app.update_stroke(pointer(140, 50))
+        await self.app.end_stroke(None)
+        stroke = self.app.strokes[0].copy()
+        self.assertEqual(stroke["tool"], "marker")
+        self.assertEqual(stroke["color"], "#FFEB3B")
+        self.assertEqual(stroke["width"], self.app.thickness * 4)
+        self.assertAlmostEqual(stroke["opacity"], 0.32)
+        self.app.undo()
+        self.assertEqual(self.app.strokes, [])
+        self.app.redo()
+        self.assertEqual(self.app.strokes, [stroke])
+        self.app.go_page(1)
+        self.app.go_page(-1)
+        self.assertEqual(self.app.strokes, [stroke])
+        self.app.set_color("#12B76A")
+        self.assertEqual(self.app.tool, "marker")
+        self.assertEqual(self.app.marker_color, "#12B76A")
+
+    async def test_legacy_highlight_remains_a_note_without_text_search(self) -> None:
+        """旧文字高亮记录不丢失，但加载页面时不再进入原文查找流程。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.app.store.add_text_annotation(self.app.book.id, 0, "highlight", "旧记录", "ReadDraw")
+        with patch("main.render_page", return_value=Image.new("RGB", (100, 200), "white")) as render:
+            self.app.load_page()
+        render.assert_called_once_with(self.app.document, 0)
+        self.assertEqual(len(self.app.text_annotations), 1)
+        self.assertEqual(len(self.app.annotation_list.controls), 1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 param(
     [switch]$OneDir,
-    [string]$Version = "v0.0.1"
+    [string]$Version = "v0.0.3"
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,9 +23,7 @@ if (-not (Test-Path -LiteralPath $iconPath)) {
     throw "Application icon not found: $iconPath"
 }
 $arguments = @(
-    "pack", "main.py", "--name", "ReadDraw", "--icon", $iconPath, "--distpath", "dist", "--yes",
-    "--add-binary", "native/drop_helper.exe;.",
-    "--add-binary", "native/drop_hook.dll;."
+    "pack", "main.py", "--name", "ReadDraw", "--icon", $iconPath, "--distpath", "dist", "--yes"
 )
 if ($OneDir) {
     $arguments += "--onedir"
