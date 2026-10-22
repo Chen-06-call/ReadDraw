@@ -138,6 +138,25 @@ def build_desktop(app):
     app.progress_bar = ft.ProgressBar(value=0, height=4, color=ACCENT, bgcolor=LINE, border_radius=2)
     app.notes_text = label("在页面留下第一条笔记", 11)
     app.annotation_list = ft.ListView(expand=True, spacing=8)
+    app.note_quote_field = ft.TextField(
+        label="原文或选段（可选）", multiline=True, min_lines=2, max_lines=3,
+        border_radius=6,
+    )
+    app.note_content_field = ft.TextField(
+        label="笔记内容", multiline=True, min_lines=3, max_lines=5,
+        border_radius=6,
+    )
+    app.note_editor = ft.Container(
+        visible=False,
+        content=ft.Column([
+            app.note_quote_field,
+            app.note_content_field,
+            ft.Row([
+                ft.TextButton("取消", on_click=app.cancel_note),
+                ft.FilledButton("保存笔记", icon=ft.Icons.SAVE_OUTLINED, on_click=app.save_text_annotation),
+            ], alignment=ft.MainAxisAlignment.END),
+        ], spacing=8),
+    )
     app.notes_panel = ft.Container(
         width=258, bgcolor=PAPER, padding=ft.Padding.all(20),
         border=ft.Border.only(left=ft.BorderSide(1, LINE)),
@@ -148,7 +167,8 @@ def build_desktop(app):
             ft.Divider(height=28, color=LINE),
             label("本页批注", 12, INK, weight=ft.FontWeight.W_600), app.notes_text,
             ft.Row([ft.TextButton("荧光笔", icon=ft.Icons.HIGHLIGHT_ROUNDED, on_click=lambda e: app.set_tool("marker")),
-                    ft.TextButton("文字", icon=ft.Icons.EDIT_NOTE_ROUNDED, on_click=app.open_text_dialog)], spacing=0),
+                    ft.TextButton("文字", icon=ft.Icons.EDIT_NOTE_ROUNDED, on_click=app.open_note_editor)], spacing=0),
+            app.note_editor,
             app.annotation_list,
             ft.Divider(color=LINE), label("数据保存位置", 10), app.data_path_text,
         ], spacing=10, expand=True),

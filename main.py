@@ -429,30 +429,50 @@ class ReadDrawApp:
                 )
             )
 
-    def open_text_dialog(self, _=None) -> None:
+    def open_note_editor(self, _=None) -> None:
+        """在侧栏展开批注表单，避免调用不稳定的原生弹窗。"""
         if not self.book:
             self.show_error("请先打开一本书")
             return
-        quote_field = ft.TextField(label="原文或选段", hint_text="可摘录原文，选填", multiline=True, min_lines=2, max_lines=4)
-        content_field = ft.TextField(label="批注内容", hint_text="写下你的想法", multiline=True, min_lines=3, max_lines=6)
+        self.note_quote_field.value = ""
+        self.note_content_field.value = ""
+        self.note_editor.visible = True
+        self.page.update()
 
-        def save_annotation(_=None) -> None:
-            quote = quote_field.value.strip()
-            content = content_field.value.strip() or quote
-            if not content:
-                self.show_error("请输入内容")
-                return
-            self.store.add_text_annotation(self.book.id, self.page_index, "note", content, quote)
-            self.page.pop_dialog()
+    def open_text_dialog(self, event=None) -> None:
+        """兼容工具栏旧回调，将文字批注统一交给侧栏表单。"""
+        self.open_note_editor(event)
+
+    def cancel_note(self, _=None) -> None:
+        self.note_editor.visible = False
+        self.note_quote_field.value = ""
+        self.note_content_field.value = ""
+        self.page.update()
+
+    def save_text_annotation(self, _=None) -> None:
+        """保存右侧表单内容；原文和想法至少填写一项。"""
+        if not self.book:
+            self.show_error("请先打开一本书")
+            return
+        quote = (self.note_quote_field.value or "").strip()
+        content = (self.note_content_field.value or "").strip()
+        if not content and not quote:
+            self.show_error("请填写原文或笔记内容")
+            return
+        try:
+            self.store.add_text_annotation(
+                self.book.id, self.page_index, "note", content or quote, quote
+            )
+            self.note_editor.visible = False
+            self.note_quote_field.value = ""
+            self.note_content_field.value = ""
             self.load_page()
-
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("添加文字批注"),
-            content=ft.Column([quote_field, content_field], tight=True, width=460),
-            actions=[ft.TextButton("取消", on_click=lambda e: self.page.pop_dialog()), ft.FilledButton("保存", on_click=save_annotation)],
-        )
-        self.page.show_dialog(dialog)
+            self.status.value = "文字笔记已保存"
+            self.status.color = "#217567"
+            self.page.update()
+        except Exception as exc:
+            logging.getLogger("readdraw").exception("保存文字笔记失败")
+            self.show_error(f"保存笔记失败：{exc}")
 
     def toggle_sync(self, _=None) -> None:
         if self.sync_server.running:
@@ -490,6 +510,7 @@ class ReadDrawApp:
         if self._closed:
             return
         self._closed = True
+        logger = logging.getLogger("readdraw")
         try:
             self.finish_drawing()
         except Exception:
@@ -501,13 +522,23 @@ class ReadDrawApp:
             logging.getLogger("readdraw").exception("停止局域网同步服务失败")
         finally:
             if self.document:
-                self.document.close()
-                self.document = None
-            self.store.close()
+                try:
+                    self.document.close()
+                except Exception:
+                    logger.exception("Close document failed")
+                finally:
+                    self.document = None
+            try:
+                self.store.close()
+            except Exception:
+                logger.exception("Close local database failed")
         try:
-            await self.page.window.destroy()
+            # 允许窗口正常关闭，让 Flet 宿主收到退出信号并结束进程。
+            self.page.window.prevent_close = False
+            self.page.update()
+            await self.page.window.close()
         except RuntimeError:
-            # 用户关闭窗口或原生客户端退出时，会话可能先于清理流程断开。
+            # 原生窗口可能已先行关闭；此时页面会话也会随客户端退出。
             logging.getLogger("readdraw").info("Window client disconnected during shutdown")
 
 

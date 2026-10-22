@@ -101,10 +101,37 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(self.connection.messages), 0)
 
     async def test_shutdown_tolerates_a_disconnected_window(self) -> None:
-        with patch.object(self.app.page.window, "destroy", new=AsyncMock(side_effect=RuntimeError("Session closed"))):
+        with patch.object(self.app.page.window, "close", new=AsyncMock(side_effect=RuntimeError("Session closed"))):
             await self.app._close_window()
         self.assertTrue(self.app._closed)
         self.assertIsNone(self.app.document)
+
+    async def test_text_note_editor_saves_content_without_opening_dialog(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        with patch.object(self.app.page, "show_dialog") as show_dialog:
+            self.app.open_text_dialog()
+            self.assertTrue(self.app.note_editor.visible)
+            show_dialog.assert_not_called()
+
+            self.app.save_text_annotation()
+            self.assertEqual(self.app.store.text_annotations(self.app.book.id, 0), [])
+
+            self.app.note_quote_field.value = "ReadDraw page"
+            self.app.note_content_field.value = "重点内容"
+            self.app.save_text_annotation()
+
+        annotations = self.app.store.text_annotations(self.app.book.id, 0)
+        self.assertEqual(len(annotations), 1)
+        self.assertEqual(annotations[0].content, "重点内容")
+        self.assertEqual(annotations[0].quote, "ReadDraw page")
+        self.assertFalse(self.app.note_editor.visible)
+        show_dialog.assert_not_called()
+
+    async def test_window_close_requests_host_exit_after_cleanup(self) -> None:
+        with patch.object(self.app.page.window, "close", new=AsyncMock()) as close:
+            await self.app._close_window()
+        self.assertFalse(self.app.page.window.prevent_close)
+        close.assert_awaited_once()
 
     async def test_marker_draw_save_reload_and_undo_without_a_dialog(self) -> None:
         """荧光笔只切换绘画工具，笔迹透明度随页码保存并可撤销。"""
