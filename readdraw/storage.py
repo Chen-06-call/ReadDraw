@@ -102,6 +102,11 @@ class Store:
         rows = self.db.execute("SELECT * FROM attachments WHERE book_id=? AND page=? ORDER BY created_at", (book_id, page)).fetchall()
         return [Attachment(**dict(row)) for row in rows]
 
+    def update_attachment_position(self, attachment_id: str, x: int, y: int) -> None:
+        """保存图片附件在书页坐标中的位置。"""
+        self.db.execute("UPDATE attachments SET x=?, y=? WHERE id=?", (int(x), int(y), attachment_id))
+        self.db.commit()
+
     def export_snapshot(self) -> dict[str, Any]:
         snapshot = {
             "books": [dict(row) for row in self.db.execute("SELECT * FROM books")],

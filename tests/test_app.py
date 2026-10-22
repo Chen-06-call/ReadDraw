@@ -167,6 +167,21 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.tool, "marker")
         self.assertEqual(self.app.marker_color, "#12B76A")
 
+    async def test_mouse_mode_does_not_create_strokes_and_alt_scroll_zooms(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        self.app.set_tool("mouse")
+        self.assertTrue(self.app.mouse_btn.selected)
+        self.assertFalse(self.app.pen_btn.selected)
+        event = SimpleNamespace(local_x=100, local_y=100)
+        await self.app.start_stroke(event)
+        await self.app.update_stroke(event)
+        await self.app.end_stroke(event)
+        self.assertEqual(self.app.strokes, [])
+        self.app.alt_pressed = True
+        previous_zoom = self.app.drawing_view.zoom
+        self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120)))
+        self.assertGreater(self.app.drawing_view.zoom, previous_zoom)
+
     async def test_legacy_highlight_remains_a_note_without_text_search(self) -> None:
         """旧文字高亮记录不丢失，但加载页面时不再进入原文查找流程。"""
         self.app.import_book(str(self.create_pdf()))

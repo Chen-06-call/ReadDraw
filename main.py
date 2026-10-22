@@ -54,9 +54,16 @@ class ReadDrawApp:
         self.thickness = 4
         self._closed = False
         self._closing = False
+        self.alt_pressed = False
         configured_background = config.get_setting("background", config.DEFAULT_BACKGROUND)
         self.background_color = configured_background if configured_background in config.BACKGROUND_OPTIONS.values() else config.DEFAULT_BACKGROUND
-        self.drawing_view = ReadingCanvas(self.start_stroke, self.update_stroke, self.end_stroke)
+        self.drawing_view = ReadingCanvas(
+            self.start_stroke, self.update_stroke, self.end_stroke,
+            on_attachment_move=self.on_attachment_move,
+            on_attachment_end=self.on_attachment_end,
+            can_drag_attachments=lambda: self.tool == "mouse",
+            on_zoom=self.on_canvas_scroll,
+        )
         self.erasing = False
         self.directory_picker = ft.FilePicker()
         self.data_path_text = ft.Text(str(config.APP_DIR), size=10, color="#667085", selectable=True)
@@ -92,6 +99,28 @@ class ReadDrawApp:
 
     def on_page_error(self, event: Any) -> None:
         logging.getLogger("readdraw").error("Client event error: %s", getattr(event, "data", event))
+
+    def on_keyboard_event(self, event: Any) -> None:
+        """记录 Alt 键状态，供画布滚轮缩放使用。"""
+        key = str(getattr(event, "key", "")).lower()
+        self.alt_pressed = bool(getattr(event, "alt", False)) or key in {"alt", "alt left", "alt right"}
+
+    def on_canvas_scroll(self, event: Any) -> None:
+        """鼠标模式下按住 Alt 使用滚轮缩放页面。"""
+        if self.tool != "mouse" or not self.alt_pressed:
+            return
+        delta = getattr(getattr(event, "scroll_delta", None), "y", 0.0)
+        if not delta:
+            return
+        factor = 1.1 if delta < 0 else 1 / 1.1
+        if self.drawing_view.set_zoom(self.drawing_view.zoom * factor):
+            try:
+                self.drawing_view.control.update()
+            except RuntimeError:
+                # 单元测试或页面重建期间控件可能暂未挂载，缩放状态仍已保存。
+                pass
+            self.status.value = f"鼠标模式：缩放 {self.drawing_view.zoom:.0%}"
+            self.status.update()
 
     def color_button(self, color: str) -> ft.Control:
         return ft.Container(width=23, height=23, bgcolor=color, border_radius=12, border=ft.Border.all(2, "#FFFFFF"), tooltip=f"颜色 {color}", on_click=lambda e, c=color: self.set_color(c))
@@ -294,7 +323,7 @@ class ReadDrawApp:
         self.drawing_view.ink.update()
 
     async def start_stroke(self, event: Any) -> None:
-        if not self.book or self.base_image is None:
+        if self.tool == "mouse" or not self.book or self.base_image is None:
             return
         position = self.drawing_view.coords(event)
         if position is None:
@@ -350,17 +379,36 @@ class ReadDrawApp:
         self.notes_text.update()
 
     def set_tool(self, tool: str) -> None:
-        if tool not in ("pen", "marker", "eraser"):
+        if tool not in ("mouse", "pen", "marker", "eraser"):
             return
         # 切换工具前提交笔迹，避免荧光笔与普通画笔共用尚未结束的手势。
         self.finish_drawing()
         self.tool = tool
+        self.drawing_view.detector.mouse_cursor = ft.MouseCursor.BASIC if tool == "mouse" else ft.MouseCursor.PRECISE
+        self.mouse_btn.selected = tool == "mouse"
         self.pen_btn.selected = tool == "pen"
         self.marker_btn.selected = tool == "marker"
         self.eraser_btn.selected = tool == "eraser"
         self.thickness_slider.tooltip = "荧光笔粗细（普通画笔的 4 倍）" if tool == "marker" else "画笔粗细"
-        self.status.value = "荧光笔：按住鼠标在书页上涂画" if tool == "marker" else ("橡皮擦" if tool == "eraser" else "画笔")
+        self.status.value = {
+            "mouse": "鼠标模式：可拖动图片，按住 Alt + 滚轮缩放",
+            "marker": "荧光笔：按住鼠标在书页上涂画",
+            "eraser": "橡皮擦",
+            "pen": "画笔",
+        }[tool]
         self.page.update()
+
+    def on_attachment_move(self, _attachment: Any) -> None:
+        """拖动过程中只更新图片控件，避免每一帧重绘书页。"""
+        self.status.value = "正在移动图片"
+        self.status.update()
+
+    def on_attachment_end(self, attachment: Any) -> None:
+        """松开鼠标后一次性保存附件位置。"""
+        if self.book:
+            self.store.update_attachment_position(attachment.id, attachment.x, attachment.y)
+            self.status.value = "图片位置已保存"
+            self.status.update()
 
     def set_color(self, color: str) -> None:
         if self.tool == "marker":

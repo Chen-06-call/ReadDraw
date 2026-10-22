@@ -46,7 +46,11 @@ class ReadingCanvas:
     All handlers run on Flet's event loop, in arrival order without awaits.
     """
 
-    def __init__(self, on_start: Callable, on_move: Callable, on_end: Callable) -> None:
+    def __init__(self, on_start: Callable, on_move: Callable, on_end: Callable,
+                 on_attachment_move: Callable | None = None,
+                 on_attachment_end: Callable | None = None,
+                 can_drag_attachments: Callable[[], bool] | None = None,
+                 on_zoom: Callable | None = None) -> None:
         self.image = ft.Image(
             src=b"", fit=ft.BoxFit.FILL, visible=False,
             error_content=ft.Text("书页显示失败，请重新打开文件", color="#B42318"),
@@ -65,23 +69,34 @@ class ReadingCanvas:
             on_pan_end=on_end,
             on_pan_cancel=on_end,
             on_tap_up=on_end,
+            on_scroll=on_zoom,
         )
         # Never use expand=True on Canvas: Flet serializes it as infinite
         # width/height. A centered container supplies loose constraints, which
         # then produces a Flutter layout error (a grey rectangle in release).
         self.ink = cv.Canvas()
-        self.control = ft.Stack([self.page_frame, self.ink, self.detector], fit=ft.StackFit.EXPAND)
+        self.attachment_layer = ft.Stack([], fit=ft.StackFit.EXPAND)
+        self.control = ft.Stack([self.page_frame, self.ink, self.detector, self.attachment_layer], fit=ft.StackFit.EXPAND)
         self.viewport = (640.0, 700.0)
         self.page_size = (1, 1)
         self.transform = PageTransform.fit(1, 1, *self.viewport)
+        self.zoom = 1.0
+        self.attachments: list[Any] = []
+        self.attachment_controls: dict[str, ft.Container] = {}
+        self._attachment_drag_origins: dict[str, tuple[float, float]] = {}
+        self.on_attachment_move = on_attachment_move
+        self.on_attachment_end = on_attachment_end
+        self.can_drag_attachments = can_drag_attachments or (lambda: True)
         self.strokes: list[dict[str, Any]] = []
         self.active_path: cv.Path | None = None
         self.layout()
 
     def set_page(self, base: Image.Image, attachments: list, strokes: list[dict]) -> None:
-        self.image.src = image_data(compose_page(base, [], attachments))
+        # 附件单独放在图片层，才能在鼠标模式下命中并拖动；导出时仍由 compose_page 合成。
+        self.image.src = image_data(compose_page(base, [], []))
         self.image.visible = True
         self.page_size = base.size
+        self.attachments = attachments
         self.strokes = strokes
         self.layout()
 
@@ -91,11 +106,85 @@ class ReadingCanvas:
         self.ink.width, self.ink.height = width, height
         self.detector.width, self.detector.height = width, height
         self.detector.content.width, self.detector.content.height = width, height
-        self.transform = PageTransform.fit(*self.page_size, *self.viewport)
+        fitted = PageTransform.fit(*self.page_size, *self.viewport)
+        scale = fitted.scale * self.zoom
+        width, height = self.page_size[0] * scale, self.page_size[1] * scale
+        self.transform = PageTransform(scale, (self.viewport[0] - width) / 2,
+                                       (self.viewport[1] - height) / 2, width, height)
         t = self.transform
         self.page_frame.left, self.page_frame.top = t.left, t.top
         self.page_frame.width, self.page_frame.height = t.width, t.height
         self.set_strokes(self.strokes)
+        self._build_attachment_layer()
+
+    def _build_attachment_layer(self) -> None:
+        """按当前缩放重建附件控件，附件位置始终保存为书页像素。"""
+        self.attachment_layer.controls.clear()
+        self.attachment_controls.clear()
+        for attachment in self.attachments:
+            try:
+                with Image.open(attachment.path) as source:
+                    image = source.convert("RGBA")
+                    image.thumbnail((max(1, attachment.width), max(1, attachment.height)))
+                    payload = image_data(image)
+            except (OSError, ValueError):
+                continue
+            image_control = ft.Image(payload, fit=ft.BoxFit.CONTAIN,
+                                     width=attachment.width * self.transform.scale,
+                                     height=attachment.height * self.transform.scale)
+            detector = ft.GestureDetector(
+                content=image_control,
+                mouse_cursor=ft.MouseCursor.MOVE,
+                on_pan_start=lambda event, item=attachment: self._begin_attachment_drag(item),
+                on_pan_update=lambda event, item=attachment: self._move_attachment(item, event),
+                on_pan_end=lambda event, item=attachment: self._end_attachment_drag(item),
+                on_pan_cancel=lambda event, item=attachment: self._end_attachment_drag(item),
+            )
+            position = ft.Container(content=detector,
+                                    left=self.transform.to_view(attachment.x, attachment.y)[0],
+                                    top=self.transform.to_view(attachment.x, attachment.y)[1],
+                                    width=attachment.width * self.transform.scale,
+                                    height=attachment.height * self.transform.scale)
+            self.attachment_layer.controls.append(position)
+            self.attachment_controls[attachment.id] = position
+
+    def _begin_attachment_drag(self, attachment: Any) -> None:
+        if self.can_drag_attachments():
+            self._attachment_drag_origins[attachment.id] = (float(attachment.x), float(attachment.y))
+
+    def _move_attachment(self, attachment: Any, event: Any) -> None:
+        if not self.can_drag_attachments() or attachment.id not in self._attachment_drag_origins:
+            return
+        delta = getattr(event, "local_delta", None)
+        if delta is None:
+            return
+        origin_x, origin_y = self._attachment_drag_origins[attachment.id]
+        attachment.x = max(0, round(origin_x + float(delta.x) / self.transform.scale))
+        attachment.y = max(0, round(origin_y + float(delta.y) / self.transform.scale))
+        position = self.attachment_controls.get(attachment.id)
+        if position is not None:
+            position.left, position.top = self.transform.to_view(attachment.x, attachment.y)
+            try:
+                position.update()
+            except RuntimeError:
+                # 控件尚未挂载到真实页面时只保留模型位置，挂载后会按当前状态重绘。
+                pass
+        if self.on_attachment_move:
+            self.on_attachment_move(attachment)
+
+    def _end_attachment_drag(self, attachment: Any) -> None:
+        self._attachment_drag_origins.pop(attachment.id, None)
+        if self.on_attachment_end:
+            self.on_attachment_end(attachment)
+
+    def set_zoom(self, value: float) -> bool:
+        """限制缩放范围，避免页面过小或放大后控件尺寸溢出。"""
+        value = max(0.5, min(3.0, float(value)))
+        if abs(value - self.zoom) < 0.001:
+            return False
+        self.zoom = value
+        self.layout()
+        return True
 
     def set_viewport(self, width: float, height: float) -> bool:
         """Accept measured finite host bounds, never the renderer's own size."""

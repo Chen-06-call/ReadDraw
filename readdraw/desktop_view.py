@@ -50,6 +50,7 @@ def build_toolbar(app):
         content_padding=ft.Padding.all(6), text_size=12, text_align=ft.TextAlign.CENTER,
         on_submit=app.jump_page, border_color=LINE, border_radius=7)
     app.pen_btn = icon_button(ft.Icons.DRAW_OUTLINED, "画笔", lambda e: app.set_tool("pen"), selected=True)
+    app.mouse_btn = icon_button(ft.Icons.PAN_TOOL_OUTLINED, "鼠标", lambda e: app.set_tool("mouse"))
     app.eraser_btn = icon_button(ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_tool("eraser"))
     app.marker_btn = icon_button(ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_tool("marker"))
     app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", app.open_text_dialog)
@@ -58,7 +59,7 @@ def build_toolbar(app):
     app.thickness_slider = ft.Slider(min=2, max=16, divisions=7, value=4, width=94,
         active_color=ACCENT, on_change=app.change_thickness, tooltip="画笔粗细")
     tools = ft.Row([
-        app.pen_btn, app.eraser_btn, app.marker_btn, app.note_btn, app.image_btn,
+        app.mouse_btn, app.pen_btn, app.eraser_btn, app.marker_btn, app.note_btn, app.image_btn,
         ft.VerticalDivider(width=12, color=LINE),
         ft.Row([app.color_button(c) for c in ("#FFEB3B", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")], spacing=3),
         app.thickness_slider,
@@ -93,6 +94,7 @@ def build_desktop(app):
     page.window.min_height = 740
     page.window.prevent_close = True
     page.window.on_event = app.on_window_event
+    page.on_keyboard_event = app.on_keyboard_event
     page.on_error = app.on_page_error
     for picker in (app.file_picker, app.image_picker, app.directory_picker):
         page.services.append(picker)

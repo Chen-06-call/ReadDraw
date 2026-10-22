@@ -12,6 +12,7 @@ from readdraw.drawing import compose_page, point_near_stroke
 from readdraw.pdf import open_pdf, render_page
 from readdraw.epub import EpubDocument
 from readdraw.storage import Store
+from readdraw.models import Attachment
 from readdraw.sync_server import create_app
 from readdraw.updater import parse_release, version_tuple
 from readdraw.canvas_view import PageTransform
@@ -50,6 +51,9 @@ class CoreServiceTests(unittest.TestCase):
             Image.new("RGBA", (20, 20), "red").save(image_path)
             attachment = store.add_attachment(book.id, 2, str(image_path))
             self.assertTrue(Path(attachment.path).exists())
+            store.update_attachment_position(attachment.id, 80, 90)
+            updated = store.attachments(book.id, 2)[0]
+            self.assertEqual((updated.x, updated.y), (80, 90))
             store.close()
 
     def test_pdf_render_and_drawing(self) -> None:
@@ -144,6 +148,27 @@ class CoreServiceTests(unittest.TestCase):
         self.assertAlmostEqual(frame.width / frame.height, 4)
         with Image.open(io.BytesIO(canvas.image.src)) as decoded:
             self.assertEqual(decoded.getpixel((50, 50)), (0, 0, 255, 255))
+
+    def test_attachment_layer_moves_in_page_coordinates_and_zoom_relayouts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "inserted.png"
+            Image.new("RGBA", (80, 40), "red").save(image_path)
+            attachment = Attachment("image-1", "book-1", 0, str(image_path), "inserted.png", 24, 24, 240, 180, "now")
+            moved = []
+            canvas = ReadingCanvas(lambda event: None, lambda event: None, lambda event: None,
+                                   on_attachment_move=lambda item: moved.append((item.x, item.y)),
+                                   can_drag_attachments=lambda: True)
+            canvas.set_page(Image.new("RGB", (600, 800), "white"), [attachment], [])
+            self.assertEqual(len(canvas.attachment_layer.controls), 1)
+            canvas._begin_attachment_drag(attachment)
+            delta = type("Delta", (), {"x": 60, "y": 30})()
+            canvas._move_attachment(attachment, type("Event", (), {"local_delta": delta})())
+            self.assertEqual((attachment.x, attachment.y), (24 + round(60 / canvas.transform.scale), 24 + round(30 / canvas.transform.scale)))
+            self.assertTrue(moved)
+            previous_scale = canvas.transform.scale
+            self.assertTrue(canvas.set_zoom(1.5))
+            self.assertGreater(canvas.transform.scale, previous_scale)
+            self.assertAlmostEqual(canvas.attachment_layer.controls[0].left, canvas.transform.to_view(attachment.x, attachment.y)[0])
 
     def test_settings_merge_preserves_data_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

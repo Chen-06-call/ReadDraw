@@ -10,6 +10,7 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 - 画笔、颜色、线条粗细、橡皮擦、撤销和恢复
 - 半透明荧光笔和文字批注，按书籍与页码保存；荧光笔支持颜色、粗细、撤销、橡皮擦和 PNG 导出
 - 插入图片附件并合成到页面导出图
+- 鼠标模式下可拖动已插入图片；按住 Alt + 鼠标滚轮可以放大或缩小页面
 - 画笔使用实时矢量图层，拖动时立即显示笔迹和笔刷位置
 - 可通过侧边栏“设置”更换阅读背景，并迁移 SQLite、附件和导出文件
 - 启动 FastAPI 局域网同步服务，默认 `8765` 端口
@@ -55,31 +56,31 @@ python main.py
 ## Windows 打包
 
 ```powershell
-.\build_windows.ps1 -Version v0.0.4
+.\build_windows.ps1 -Version v0.0.5
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成带版本号的 exe、SHA256 校验文件和 `update.json`。如果希望生成便于分发的文件夹版本：
 
 Windows 版暂时停用资源管理器拖入功能，避免向 Flet 原生窗口注入 DLL 引发崩溃；请使用“打开文件”按钮导入文档。
 
-如果系统安装了 NSIS，脚本还会生成 `release\ReadDraw-Setup-v0.0.4.exe` 安装包。安装包会创建桌面快捷方式，并将程序安装到当前用户目录，不需要管理员权限。
+如果系统安装了 NSIS，脚本还会生成 `release\ReadDraw-Setup-v0.0.5.exe` 安装包。安装包会创建桌面快捷方式，并将程序安装到当前用户目录，不需要管理员权限。
 
 桌面包排除了可选的 `pymupdf.layout` / ONNX 布局分析组件，PDF 显示和文字搜索使用 MuPDF。这样可以避免不必要的模型加载和相关本机组件启动崩溃。
 
 ```powershell
-.\build_windows.ps1 -Version v0.0.4 -OneDir
+.\build_windows.ps1 -Version v0.0.5 -OneDir
 ```
 
 ## 远程更新发布
 
-推送 `v0.0.4` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
+推送 `v0.0.5` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
 
 ```powershell
 git add .
-git commit -m "Prepare ReadDraw v0.0.4"
+git commit -m "Prepare ReadDraw v0.0.5"
 git push origin main
-git tag v0.0.4
-git push origin v0.0.4
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
 GitHub Actions 文件位于 `.github/workflows/release.yml`。源码运行时只支持检查版本，不会替换 Python 环境。
