@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import socket
 import subprocess
@@ -33,20 +34,22 @@ class NativeDropBridge:
             return
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.bind(("127.0.0.1", DROP_PORT))
+            self.socket.bind(("127.0.0.1", 0))
+            port = self.socket.getsockname()[1]
             self.socket.settimeout(0.5)
             self.thread = threading.Thread(target=self._listen, daemon=True)
             self.thread.start()
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             self.process = subprocess.Popen(
-                [str(helper), str(hook), str(DROP_PORT)],
+                [str(helper), str(hook), str(port), str(os.getpid())],
                 creationflags=flags,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             atexit.register(self.stop)
         except OSError:
+            logging.getLogger(__name__).exception("Unable to start native drop bridge")
             self.stop()
 
     def stop(self) -> None:
@@ -54,19 +57,32 @@ class NativeDropBridge:
         if self.socket:
             self.socket.close()
             self.socket = None
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
         if self.process and self.process.poll() is None:
-            self.process.terminate()
+            # Let the helper unhook and unload its DLL before returning.
+            if self.process.stdin:
+                self.process.stdin.close()
+            try:
+                self.process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=3.0)
         self.process = None
 
     def _listen(self) -> None:
         while not self.stop_event.is_set() and self.socket:
             try:
-                data, _ = self.socket.recvfrom(32768)
+                data, _ = self.socket.recvfrom(65535)
             except (TimeoutError, OSError):
                 continue
             path = data.decode("utf-8", errors="replace").strip("\x00\r\n")
             if path:
-                self.on_files([path])
+                try:
+                    self.on_files([path])
+                except Exception:
+                    logging.getLogger(__name__).exception("Unable to import dropped file")
+                    continue
 
     @staticmethod
     def _binaries() -> tuple[Path, Path]:

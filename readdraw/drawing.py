@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import copy
 import io
 from typing import Any
@@ -16,7 +15,18 @@ def clone_strokes(strokes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def point_near_stroke(stroke: dict[str, Any], x: float, y: float, radius: float = 20) -> bool:
-    return any((px - x) ** 2 + (py - y) ** 2 < radius**2 for px, py in stroke.get("points", []))
+    points = stroke.get("points", [])
+    if any((px - x) ** 2 + (py - y) ** 2 <= radius**2 for px, py in points):
+        return True
+    for (ax, ay), (bx, by) in zip(points, points[1:]):
+        dx, dy = bx - ax, by - ay
+        length_squared = dx * dx + dy * dy
+        if not length_squared:
+            continue
+        t = max(0, min(1, ((x - ax) * dx + (y - ay) * dy) / length_squared))
+        if (x - ax - t * dx) ** 2 + (y - ay - t * dy) ** 2 <= radius**2:
+            return True
+    return False
 
 
 def compose_page(base_image: PILImage.Image, strokes: list[dict[str, Any]], attachments: list[Any] | None = None) -> PILImage.Image:
@@ -43,8 +53,8 @@ def compose_page(base_image: PILImage.Image, strokes: list[dict[str, Any]], atta
     return composite
 
 
-def image_data(image: PILImage.Image) -> str:
+def image_data(image: PILImage.Image) -> bytes:
+    """Encode PNG bytes for Flet's in-memory image source."""
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return "data:image/png;base64," + encoded
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()

@@ -12,7 +12,7 @@ from typing import Any
 
 from pathlib import Path
 
-from .config import ATTACHMENTS_DIR, DB_PATH
+from . import config
 from .models import Attachment, Book, TextAnnotation
 
 
@@ -20,9 +20,12 @@ class Store:
     """Small storage facade that can later be replaced by a sync repository."""
 
     def __init__(self, database_path=None) -> None:
-        self.database_path = Path(database_path) if database_path and database_path != ":memory:" else None
-        self.attachment_dir = ATTACHMENTS_DIR if self.database_path is None else self.database_path.parent / "attachments"
-        self.db = sqlite3.connect(database_path or DB_PATH)
+        database_path = database_path or config.DB_PATH
+        self.database_path = Path(database_path) if database_path != ":memory:" else None
+        if self.database_path is not None:
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.attachment_dir = config.ATTACHMENTS_DIR if self.database_path is None else self.database_path.parent / "attachments"
+        self.db = sqlite3.connect(database_path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("""CREATE TABLE IF NOT EXISTS books (
             id TEXT PRIMARY KEY, title TEXT NOT NULL, path TEXT NOT NULL UNIQUE,

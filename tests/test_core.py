@@ -1,8 +1,10 @@
 """Fast, dependency-light checks for the first release's core services."""
 
 import tempfile
+import io
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -13,6 +15,10 @@ from readdraw.storage import Store
 from readdraw.sync_server import create_app
 from readdraw.updater import parse_release, version_tuple
 from readdraw.window_drop import DROP_PORT, NativeDropBridge
+from readdraw.canvas_view import PageTransform
+from readdraw.canvas_view import ReadingCanvas
+from readdraw import config
+from readdraw.data_location import migrate_data_dir
 
 
 class CoreServiceTests(unittest.TestCase):
@@ -80,28 +86,99 @@ class CoreServiceTests(unittest.TestCase):
         self.assertIsNone(parse_release({"tag_name": "v0.0.0", "assets": []}))
         release = parse_release(
             {
-                "tag_name": "v0.0.1",
+                "tag_name": "v0.0.2",
                 "name": "First update",
                 "body": "修复问题",
                 "assets": [
                     {
-                        "name": "ReadDraw-Setup-v0.0.1.exe",
+                        "name": "ReadDraw-Setup-v0.0.2.exe",
                         "browser_download_url": "https://example.test/ReadDraw-Setup.exe",
                     },
                     {
-                        "name": "ReadDraw-v0.0.1-windows-x64.exe",
+                        "name": "ReadDraw-v0.0.2-windows-x64.exe",
                         "browser_download_url": "https://example.test/ReadDraw.exe",
                     }
                 ],
             }
         )
         self.assertIsNotNone(release)
-        self.assertEqual(release.asset_name, "ReadDraw-v0.0.1-windows-x64.exe")
-        self.assertEqual(release.version, "0.0.1")
+        self.assertEqual(release.asset_name, "ReadDraw-v0.0.2-windows-x64.exe")
+        self.assertEqual(release.version, "0.0.2")
 
     def test_windows_drop_contract(self) -> None:
         self.assertEqual(DROP_PORT, 47831)
         self.assertTrue(callable(NativeDropBridge.start))
+
+    def test_canvas_transform_round_trip(self) -> None:
+        transform = PageTransform.fit(1000, 2000, 600, 600)
+        view_point = transform.to_view(500, 1000)
+        page_point = transform.to_page(*view_point)
+        self.assertAlmostEqual(page_point[0], 500, places=5)
+        self.assertAlmostEqual(page_point[1], 1000, places=5)
+
+    def test_reading_canvas_keeps_page_and_gesture_layers(self) -> None:
+        canvas = ReadingCanvas(lambda event: None, lambda event: None, lambda event: None)
+        canvas.set_page(Image.new("RGB", (100, 200), "white"), [], [])
+        self.assertTrue(canvas.image.visible)
+        # Decode the actual payload sent to the Flet client, not just the render.
+        with Image.open(io.BytesIO(canvas.image.src)) as decoded:
+            self.assertEqual(decoded.size, (100, 200))
+            self.assertEqual(decoded.getpixel((50, 100)), (255, 255, 255, 255))
+        frame = canvas.page_frame
+        self.assertGreater(frame.width, 0)
+        self.assertLessEqual(frame.left + frame.width, canvas.viewport[0])
+        self.assertLessEqual(frame.top + frame.height, canvas.viewport[1])
+        # A landscape page must refit rather than reuse portrait bounds.
+        canvas.set_page(Image.new("RGB", (400, 100), "blue"), [], [])
+        self.assertAlmostEqual(frame.width / frame.height, 4)
+        with Image.open(io.BytesIO(canvas.image.src)) as decoded:
+            self.assertEqual(decoded.getpixel((50, 50)), (0, 0, 255, 255))
+
+    def test_settings_merge_preserves_data_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = config.SETTINGS_PATH
+            try:
+                config.SETTINGS_PATH = Path(directory) / "settings.json"
+                config.save_settings(data_dir="D:/ReadDrawData")
+                config.save_settings(background="#FFFDF7")
+                self.assertEqual(config.load_settings(), {"data_dir": "D:/ReadDrawData", "background": "#FFFDF7"})
+            finally:
+                config.SETTINGS_PATH = original
+
+    def test_data_migration_keeps_background_and_attachments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                patch.object(config, "SETTINGS_PATH", root / "settings.json"),
+                patch.object(config, "APP_DIR", root / "source"),
+                patch.object(config, "DB_PATH", root / "source" / "readdraw.sqlite3"),
+                patch.object(config, "ATTACHMENTS_DIR", root / "source" / "attachments"),
+            ):
+                config.save_settings(background="#EEF4FF")
+                source = Store(config.DB_PATH)
+                try:
+                    book = source.add_book("Book", str(root / "external.pdf"), 3)
+                    source.update_page(book.id, 2)
+                    image = root / "image.png"
+                    Image.new("RGB", (10, 10), "red").save(image)
+                    attachment = source.add_attachment(book.id, 2, str(image))
+                    destination = migrate_data_dir(source, root / "target")
+                    target = Store(destination / "readdraw.sqlite3")
+                    try:
+                        self.assertEqual(target.books()[0].current_page, 2)
+                        copied_path = Path(target.attachments(book.id, 2)[0].path)
+                        self.assertTrue(copied_path.is_relative_to(destination))
+                        self.assertEqual(copied_path.read_bytes(), Path(attachment.path).read_bytes())
+                        self.assertEqual(config.get_setting("background"), "#EEF4FF")
+                        self.assertEqual(config._configured_app_dir(), destination)
+                    finally:
+                        target.close()
+                    # Attempting to overwrite an existing library must fail.
+                    with self.assertRaises(ValueError):
+                        migrate_data_dir(source, destination)
+                    self.assertEqual(source.books()[0].current_page, 2)
+                finally:
+                    source.close()
 
 
 if __name__ == "__main__":

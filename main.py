@@ -4,15 +4,27 @@ from __future__ import annotations
 
 import os
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
+from readdraw import config
+from readdraw.diagnostics import configure_logging
+
+# Start native crash capture before importing any third-party DLLs. A windowed
+# build has no console, so crashes during imports would otherwise be invisible.
+if __name__ == "__main__":
+    configure_logging()
+
 import flet as ft
 from PIL import Image as PILImage
-from readdraw.config import APP_DIR
-from readdraw.drawing import clone_strokes, compose_page, image_data, point_near_stroke
+from readdraw.data_location import migrate_data_dir
+from readdraw.canvas_view import ReadingCanvas
+from readdraw.drawing import clone_strokes, compose_page, point_near_stroke
 from readdraw.models import Book
 from readdraw.reader import open_document, render_page
+from readdraw.settings_view import create_settings_dialog
+from readdraw.desktop_view import build_desktop
 from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
 from readdraw.updater import ReleaseInfo, check_latest_release, download_update, is_packaged, schedule_windows_replace
@@ -38,8 +50,16 @@ class ReadDrawApp:
         self.tool = "pen"
         self.color = "#E45756"
         self.thickness = 4
-        self.image = ft.Image(src="", fit=ft.BoxFit.CONTAIN, border_radius=4)
-        self.canvas_host = ft.Container(expand=True, alignment=ft.Alignment.CENTER, bgcolor="#E8ECF1", border_radius=8,
+        self._closed = False
+        self._closing = False
+        configured_background = config.get_setting("background", config.DEFAULT_BACKGROUND)
+        self.background_color = configured_background if configured_background in config.BACKGROUND_OPTIONS.values() else config.DEFAULT_BACKGROUND
+        self.drawing_view = ReadingCanvas(self.start_stroke, self.update_stroke, self.end_stroke)
+        self.erasing = False
+        self.directory_picker = ft.FilePicker()
+        self.data_path_text = ft.Text(str(config.APP_DIR), size=10, color="#667085", selectable=True)
+        self.settings_path_text = ft.Text(str(config.APP_DIR), size=12, color="#667085", selectable=True)
+        self.canvas_host = ft.Container(expand=True, alignment=ft.Alignment.CENTER, bgcolor=self.background_color, border_radius=8,
             content=ft.Column([ft.Icon(ft.Icons.MENU_BOOK_ROUNDED, size=54, color="#8B95A5"),
                 ft.Text("打开或拖入 PDF / EPUB 开始阅读", size=20, weight=ft.FontWeight.W_600, color="#344054"),
                 ft.Text("支持点击下方按钮选择文件，也可以把文件直接拖到阅读区域", color="#667085"),
@@ -56,59 +76,30 @@ class ReadDrawApp:
         self.file_drop.start()
 
     def build(self) -> None:
-        self.page.title = "ReadDraw · 阅读与绘画笔记"
-        self.page.theme_mode = ft.ThemeMode.LIGHT
-        self.page.bgcolor = "#F6F8FA"
-        self.page.padding = 0
-        self.page.window.min_width = 980
-        self.page.window.min_height = 680
-        # FilePicker is a Flet service in 1.x; putting it in overlay leaves
-        # pick_files() without a client listener and causes a timeout.
-        self.page.services.append(self.file_picker)
-        self.page.services.append(self.image_picker)
-        self.library_list = ft.ListView(expand=True, spacing=4, padding=ft.Padding.only(top=8))
-        self.refresh_library()
-        sidebar = ft.Container(width=264, padding=ft.Padding.all(18), bgcolor="#FFFFFF", border=ft.Border.only(right=ft.BorderSide(1, "#E4E7EC")),
-            content=ft.Column([ft.Row([ft.Icon(ft.Icons.AUTO_STORIES_ROUNDED, color="#3857D6"), ft.Text("ReadDraw", size=21, weight=ft.FontWeight.W_700, color="#1D2939")], spacing=8),
-                ft.Text("我的书库", size=12, color="#98A2B3", weight=ft.FontWeight.W_600),
-                ft.FilledButton("打开文件", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=self.open_picker, height=42),
-                ft.OutlinedButton("检查更新", icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, on_click=self.check_updates),
-                ft.Text(f"当前版本 {APP_TAG}", size=11, color="#98A2B3"), self.library_list,
-                ft.Divider(height=1, color="#EAECF0"), ft.Text("第一版 · 本地模式", size=11, color="#98A2B3")], expand=True, spacing=12))
-        self.toolbar = self.make_toolbar()
-        self.progress_text = ft.Text("导入 PDF 后开始记录进度", size=13, color="#667085")
-        self.notes_text = ft.Text("当前页还没有绘画批注", size=13, color="#98A2B3")
-        self.annotation_list = ft.ListView(expand=True, spacing=6)
-        right_panel = ft.Container(width=240, padding=ft.Padding.all(18), bgcolor="#FFFFFF", border=ft.Border.only(left=ft.BorderSide(1, "#E4E7EC")),
-            content=ft.Column([ft.Text("阅读信息", size=15, weight=ft.FontWeight.W_600, color="#344054"), self.progress_text,
-                ft.Divider(height=20, color="#EAECF0"), ft.Text("本页批注", size=15, weight=ft.FontWeight.W_600, color="#344054"), self.notes_text, self.annotation_list,
-                ft.Container(expand=True), ft.Text("数据保存位置", size=11, color="#98A2B3"), ft.Text(str(APP_DIR), size=10, color="#667085", selectable=True)], expand=True, spacing=10))
-        center = ft.Container(expand=True, padding=ft.Padding.symmetric(horizontal=22, vertical=16), content=ft.Column([self.toolbar, self.canvas_host, self.status], expand=True, spacing=12))
-        self.page.add(ft.Row([sidebar, center, right_panel], expand=True, spacing=0))
+        build_desktop(self)
 
-    def make_toolbar(self) -> ft.Control:
-        self.prev_btn = ft.IconButton(ft.Icons.CHEVRON_LEFT_ROUNDED, tooltip="上一页", on_click=lambda e: self.go_page(-1))
-        self.next_btn = ft.IconButton(ft.Icons.CHEVRON_RIGHT_ROUNDED, tooltip="下一页", on_click=lambda e: self.go_page(1))
-        self.page_input = ft.TextField(value="", width=62, height=38, text_align=ft.TextAlign.CENTER, dense=True, on_submit=self.jump_page)
-        self.pen_btn = ft.IconButton(ft.Icons.DRAW_ROUNDED, tooltip="画笔", selected=True, on_click=lambda e: self.set_tool("pen"))
-        self.eraser_btn = ft.IconButton(ft.Icons.CLEANING_SERVICES_ROUNDED, tooltip="橡皮擦", on_click=lambda e: self.set_tool("eraser"))
-        self.highlight_btn = ft.IconButton(ft.Icons.HIGHLIGHT_ROUNDED, tooltip="添加文字高亮", on_click=lambda e: self.open_text_dialog("highlight"))
-        self.note_btn = ft.IconButton(ft.Icons.EDIT_NOTE_ROUNDED, tooltip="添加文字批注", on_click=lambda e: self.open_text_dialog("note"))
-        self.image_btn = ft.IconButton(ft.Icons.IMAGE_ROUNDED, tooltip="插入图片", on_click=self.open_image_picker)
-        self.sync_btn = ft.IconButton(ft.Icons.LAN_ROUNDED, tooltip="启动局域网同步", on_click=self.toggle_sync)
-        colors = ft.Row([self.color_button(c) for c in ["#E45756", "#3857D6", "#12B76A", "#F79009", "#101828"]], spacing=2)
-        self.thickness_slider = ft.Slider(min=2, max=16, divisions=7, value=4, width=110, tooltip="线条粗细", on_change=self.change_thickness)
-        return ft.Container(padding=ft.Padding.symmetric(horizontal=10, vertical=7), bgcolor="#FFFFFF", border_radius=8, border=ft.Border.all(1, "#E4E7EC"),
-            content=ft.Row([self.prev_btn, self.page_label, self.page_input, self.next_btn, ft.VerticalDivider(width=16), self.pen_btn, self.eraser_btn, self.highlight_btn, self.note_btn, self.image_btn, colors,
-                ft.Row([ft.Icon(ft.Icons.LINE_WEIGHT_ROUNDED, size=17, color="#667085"), self.thickness_slider], spacing=2), ft.Container(expand=True),
-                ft.IconButton(ft.Icons.UNDO_ROUNDED, tooltip="撤销", on_click=self.undo), ft.IconButton(ft.Icons.REDO_ROUNDED, tooltip="恢复", on_click=self.redo),
-                ft.IconButton(ft.Icons.DOWNLOAD_ROUNDED, tooltip="导出本页 PNG", on_click=self.export_png), self.sync_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4))
+    def toggle_library(self, _=None) -> None:
+        self.library_panel.visible = not self.library_panel.visible
+        self.page.update()
+
+    def toggle_notes(self, _=None) -> None:
+        self.notes_panel.visible = not self.notes_panel.visible
+        self.page.update()
+
+    def fit_page(self, _=None) -> None:
+        self.drawing_view.layout()
+        self.page.update()
+
+    def on_page_error(self, event: Any) -> None:
+        logging.getLogger("readdraw").error("Client event error: %s", getattr(event, "data", event))
 
     def color_button(self, color: str) -> ft.Control:
         return ft.Container(width=23, height=23, bgcolor=color, border_radius=12, border=ft.Border.all(2, "#FFFFFF"), tooltip=f"颜色 {color}", on_click=lambda e, c=color: self.set_color(c))
 
     def refresh_library(self) -> None:
         self.library_list.controls.clear()
+        if hasattr(self, "library_count"):
+            self.library_count.value = f"{len(self.books)}"
         if not self.books:
             self.library_list.controls.append(ft.Text("还没有书籍", size=13, color="#98A2B3"))
         for book in self.books:
@@ -127,6 +118,69 @@ class ReadDrawApp:
         )
         if files and files[0].path:
             self.import_book(files[0].path)
+
+    async def choose_data_dir(self, _=None) -> None:
+        try:
+            selected = await self.directory_picker.get_directory_path(
+                dialog_title="选择 ReadDraw 数据保存位置",
+                initial_directory=str(config.APP_DIR),
+            )
+        except Exception as exc:
+            self.show_error(f"无法选择数据位置：{exc}")
+            return
+        if not selected:
+            return
+        current_id = self.book.id if self.book else None
+        was_syncing = self.sync_server.running
+        try:
+            await self.end_stroke(None)
+            self.sync_server.stop()
+            target = migrate_data_dir(self.store, selected)
+            replacement = Store(target / "readdraw.sqlite3")
+            previous = self.store
+            self.store = replacement
+            previous.close()
+            self.books = self.store.books()
+            self.sync_server.database_path = config.DB_PATH
+            self.data_path_text.value = str(target)
+            self.settings_path_text.value = str(target)
+            self.refresh_library()
+            if current_id:
+                matching = next((book for book in self.books if book.id == current_id), None)
+                if matching:
+                    self.open_book(matching)
+            self.status.value = f"数据已保存到：{target}"
+            self.page.update()
+        except Exception as exc:
+            self.show_error(f"修改数据位置失败：{exc}")
+        finally:
+            if was_syncing:
+                self.sync_server.start()
+
+    def apply_background(self, color: str) -> bool:
+        """Publish a background only after its preference has been saved."""
+        if color not in config.BACKGROUND_OPTIONS.values():
+            return False
+        try:
+            config.save_settings(background=color)
+        except OSError as exc:
+            self.show_error(f"保存背景设置失败：{exc}")
+            return False
+        self.background_color = color
+        self.canvas_host.bgcolor = color
+        self.page.bgcolor = color
+        self.status.color = "#D0D5DD" if color == "#263238" else "#667085"
+        self.page.update()
+        return True
+
+    def open_settings(self, _=None) -> None:
+        self.settings_path_text.value = str(config.APP_DIR)
+        dialog = create_settings_dialog(
+            self.background_color, self.settings_path_text,
+            self.apply_background, self.choose_data_dir,
+            lambda event: self.page.pop_dialog(),
+        )
+        self.page.show_dialog(dialog)
 
     def on_files_dropped(self, paths: list[str]) -> None:
         """Import the first supported document dropped from Windows Explorer."""
@@ -176,7 +230,7 @@ class ReadDrawApp:
             self.page.pop_dialog()
             self.status.value = "更新已下载，应用将在退出后重启"
             self.status.update()
-            self.page.window.close()
+            await self._close_window()
         except Exception as exc:
             self.show_error(f"更新失败：{exc}")
 
@@ -210,6 +264,7 @@ class ReadDrawApp:
 
     def open_book(self, book: Book) -> None:
         try:
+            self.finish_drawing()
             if self.document: self.document.close()
             self.document = open_document(book.path)
             self.book = book
@@ -221,6 +276,7 @@ class ReadDrawApp:
 
     def load_page(self) -> None:
         if not self.document or not self.book: return
+        self.finish_drawing()
         self.text_annotations = self.store.text_annotations(self.book.id, self.page_index)
         self.attachments = self.store.attachments(self.book.id, self.page_index)
         quotes = [item.quote for item in self.text_annotations if item.kind == "highlight" and item.quote]
@@ -228,7 +284,8 @@ class ReadDrawApp:
         self.strokes = self.store.get_strokes(self.book.id, self.page_index)
         self.history.clear()
         self.redo_stack.clear()
-        self.update_canvas()
+        self.drawing_view.set_page(self.base_image, self.attachments, self.strokes)
+        self.canvas_host.content = self.drawing_view.control
         self.page_input.value = str(self.page_index + 1)
         self.page_label.value = f"第 {self.page_index + 1} / {self.document.page_count} 页"
         self.progress_text.value = f"阅读进度 {self.page_index + 1} / {self.document.page_count} 页\n{(self.page_index + 1) / self.document.page_count:.0%}"
@@ -240,50 +297,58 @@ class ReadDrawApp:
         self.page.update()
 
     def update_canvas(self) -> None:
-        if self.base_image is None: return
-        composite = compose_page(self.base_image, self.strokes, self.attachments)
-        self.image.src = image_data(composite)
-        self.image.width = composite.width
-        self.image.height = composite.height
-        detector = ft.GestureDetector(content=self.image, mouse_cursor=ft.MouseCursor.PRECISE, on_pan_start=self.start_stroke, on_pan_update=self.update_stroke, on_pan_end=self.end_stroke)
-        self.canvas_host.content = ft.Container(content=detector, padding=8, bgcolor="#D0D5DD", border_radius=8)
+        """Refresh vector ink after undo/redo without touching the page image."""
+        self.drawing_view.set_strokes(self.strokes)
+        self.drawing_view.ink.update()
 
-    def coords(self, event: Any) -> tuple[float, float]:
-        position = getattr(event, "local_position", None)
-        if position is not None:
-            local_x, local_y = position.x, position.y
-        else:
-            local_x, local_y = event.local_x, event.local_y
-        return max(0, float(local_x) - 8), max(0, float(local_y) - 8)
-
-    def start_stroke(self, event: Any) -> None:
-        if not self.book: return
-        x, y = self.coords(event)
-        if self.tool == "eraser":
-            self.history.append(clone_strokes(self.strokes))
-            self.strokes = [s for s in self.strokes if not point_near_stroke(s, x, y)]
-            self.redo_stack.clear()
-            self.update_canvas()
-            self.page.update()
+    async def start_stroke(self, event: Any) -> None:
+        if not self.book or self.base_image is None:
             return
+        position = self.drawing_view.coords(event)
+        if position is None:
+            return
+        self.finish_drawing()
         self.history.append(clone_strokes(self.strokes))
         self.redo_stack.clear()
-        self.active_stroke = {"color": self.color, "width": self.thickness, "points": [[x, y]]}
+        self.erasing = self.tool == "eraser"
+        if self.erasing:
+            self.erase_at(*position)
+            return
+        self.active_stroke = {"color": self.color, "width": self.thickness, "points": [list(position)]}
         self.strokes.append(self.active_stroke)
+        self.drawing_view.begin(self.active_stroke)
 
-    def update_stroke(self, event: Any) -> None:
-        if not self.active_stroke: return
-        x, y = self.coords(event)
-        self.active_stroke["points"].append([x, y])
-        self.update_canvas()
-        self.page.update()
+    async def update_stroke(self, event: Any) -> None:
+        if not self.active_stroke and not self.erasing:
+            return
+        position = self.drawing_view.coords(event, clamp=True)
+        if position is None:
+            return
+        if self.erasing:
+            self.erase_at(*position)
+        elif self.active_stroke is not None:
+            self.active_stroke["points"].append(list(position))
+            self.drawing_view.append(*position)
 
-    def end_stroke(self, _event: Any) -> None:
-        if self.active_stroke and self.book:
+    def erase_at(self, x: float, y: float) -> None:
+        radius = 16 / self.drawing_view.transform.scale
+        remaining = [s for s in self.strokes if not point_near_stroke(s, x, y, radius)]
+        if len(remaining) != len(self.strokes):
+            self.strokes[:] = remaining
+            self.update_canvas()
+
+    def finish_drawing(self) -> None:
+        """Commit a completed stroke or eraser gesture once, including on close."""
+        if (self.active_stroke is not None or self.erasing) and self.book:
             self.store.save_strokes(self.book.id, self.page_index, self.strokes)
             self.notes_text.value = f"{len(self.strokes)} 条绘画笔迹"
-            self.notes_text.update()
         self.active_stroke = None
+        self.erasing = False
+        self.drawing_view.active_path = None
+
+    async def end_stroke(self, _event: Any) -> None:
+        self.finish_drawing()
+        self.notes_text.update()
 
     def set_tool(self, tool: str) -> None:
         self.tool = tool
@@ -301,6 +366,7 @@ class ReadDrawApp:
 
     def go_page(self, delta: int) -> None:
         if self.document and 0 <= self.page_index + delta < self.document.page_count:
+            self.finish_drawing()
             self.page_index += delta
             self.store.update_page(self.book.id, self.page_index)
             self.load_page()
@@ -311,6 +377,7 @@ class ReadDrawApp:
         try:
             target = int(e.control.value) - 1
             if not 0 <= target < self.document.page_count: raise ValueError
+            self.finish_drawing()
             self.page_index = target
             self.store.update_page(self.book.id, target)
             self.load_page()
@@ -320,6 +387,7 @@ class ReadDrawApp:
             self.page_input.update()
 
     def undo(self, _=None) -> None:
+        self.finish_drawing()
         if not self.history or not self.book: return
         self.redo_stack.append(clone_strokes(self.strokes))
         self.strokes = self.history.pop()
@@ -328,6 +396,7 @@ class ReadDrawApp:
         self.page.update()
 
     def redo(self, _=None) -> None:
+        self.finish_drawing()
         if not self.redo_stack or not self.book: return
         self.history.append(clone_strokes(self.strokes))
         self.strokes = self.redo_stack.pop()
@@ -392,16 +461,39 @@ class ReadDrawApp:
             self.show_error("请先导入并打开一本 PDF")
             return
         composite = compose_page(self.base_image, self.strokes, self.attachments)
-        out = APP_DIR / f"{self.book.title}-第{self.page_index + 1}页.png"
+        out = config.APP_DIR / f"{self.book.title}-第{self.page_index + 1}页.png"
         composite.save(out)
         self.status.value = f"已导出：{out}"
         self.status.update()
 
     def show_error(self, message: str) -> None:
-        self.page.open(ft.SnackBar(content=ft.Text(message), bgcolor="#B42318"))
+        logging.getLogger("readdraw").error(message)
+        self.page.show_dialog(ft.SnackBar(content=ft.Text(message), bgcolor="#B42318"))
+
+    def on_window_event(self, event: Any) -> None:
+        if event.type == ft.WindowEventType.CLOSE and not getattr(self, "_closing", False):
+            self._closing = True
+            self.page.run_task(self._close_window)
+
+    async def _close_window(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.finish_drawing()
+        self.file_drop.stop()
+        self.sync_server.stop()
+        if self.document:
+            self.document.close()
+            self.document = None
+        self.store.close()
+        try:
+            await self.page.window.destroy()
+        except RuntimeError:
+            # The Flet client may already have disconnected during shutdown.
+            logging.getLogger("readdraw").info("Window client disconnected during shutdown")
 
 
-def main(page: ft.Page) -> None:
+async def main(page: ft.Page) -> None:
     ReadDrawApp(page)
 
 

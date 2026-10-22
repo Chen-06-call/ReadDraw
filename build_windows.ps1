@@ -1,6 +1,6 @@
 param(
     [switch]$OneDir,
-    [string]$Version = "v0.0.0"
+    [string]$Version = "v0.0.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,24 +18,25 @@ if (-not (Test-Path -LiteralPath $flet)) {
 if (-not (Test-Path -LiteralPath $flet)) {
     throw "Flet CLI was not found. Install dependencies with: python -m pip install -r requirements.txt"
 }
-$resource_prep = "import pymupdf, shutil; from pathlib import Path; shutil.copytree(Path(pymupdf.__file__).parent / 'layout' / 'resources', Path('.build-resources/pymupdf/layout/resources'), dirs_exist_ok=True)"
-python -c $resource_prep
 $iconPath = Join-Path (Get-Location) "assets\ReadDraw.ico"
 if (-not (Test-Path -LiteralPath $iconPath)) {
     throw "Application icon not found: $iconPath"
 }
 $arguments = @(
     "pack", "main.py", "--name", "ReadDraw", "--icon", $iconPath, "--distpath", "dist", "--yes",
-    "--hidden-import", "pymupdf.layout",
-    "--add-data", ".build-resources/pymupdf/layout/resources;pymupdf/layout/resources",
     "--add-binary", "native/drop_helper.exe;.",
     "--add-binary", "native/drop_hook.dll;."
 )
 if ($OneDir) {
     $arguments += "--onedir"
 }
+# Rendering and text search use MuPDF itself. The optional AI layout package
+# loads ONNX native libraries at import time and can crash a frozen Windows app.
+$arguments += @("--", "--exclude-module=pymupdf.layout", "--exclude-module=onnxruntime")
 & $flet @arguments
-Remove-Item -LiteralPath ".build-resources" -Recurse -Force -ErrorAction SilentlyContinue
+if ($LASTEXITCODE -ne 0) {
+    throw "Flet package build failed; release files were not updated."
+}
 $releaseDirectory = Join-Path (Get-Location) "release"
 New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
 $sourceExe = if ($OneDir) {
