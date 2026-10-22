@@ -182,6 +182,46 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120)))
         self.assertGreater(self.app.drawing_view.zoom, previous_zoom)
 
+    async def test_continuous_image_drag_saves_only_on_release(self) -> None:
+        """走真实的 Flet 事件解码与控件回调，连续移动后翻页仍保留最终位置。"""
+        self.app.import_book(str(self.create_pdf()))
+        source = self.root / "inserted.png"
+        Image.new("RGB", (80, 40), "red").save(source)
+        attachment = self.app.store.add_attachment(self.app.book.id, 0, str(source))
+        self.app.load_page()
+        self.app.set_tool("mouse")
+        self.session.get_page_patch()
+        canvas = self.app.drawing_view
+        position = canvas.attachment_controls[attachment.id]
+        detector = position.content
+        initial_left, initial_top = position.left, position.top
+        with patch.object(self.app.store, "update_attachment_position", wraps=self.app.store.update_attachment_position) as save:
+            await self.session.dispatch_event(detector._i, "pan_start", {
+                "k": "mouse", "g": {"x": 500, "y": 300}, "l": {"x": 20, "y": 20},
+            })
+            for dx, dy in ((5, 3), (10, 6), (80, 40), (80, 40), (60, 30), (120, 90)):
+                await self.session.dispatch_event(detector._i, "pan_update", {
+                    "g": {"x": 500 + dx, "y": 300 + dy}, "l": {"x": 20, "y": 20},
+                    "ld": {"x": 5, "y": 3},
+                })
+                self.assertAlmostEqual(position.left, initial_left + dx)
+                self.assertAlmostEqual(position.top, initial_top + dy)
+                self.assertIs(position.content, detector)
+            save.assert_not_called()
+            # 松开时鼠标继续向前移动，必须保存结束坐标，不能漏掉最后一段。
+            await self.session.dispatch_event(detector._i, "pan_end", {
+                "g": {"x": 650, "y": 400}, "l": {"x": 20, "y": 20}, "v": {"x": 0, "y": 0},
+            })
+            expected = (round(24 + 150 / canvas.transform.scale), round(24 + 100 / canvas.transform.scale))
+            save.assert_called_once_with(attachment.id, *expected)
+            await self.session.dispatch_event(detector._i, "pan_cancel", {})
+            save.assert_called_once()
+        self.assertEqual(self.app.strokes, [])
+        self.app.go_page(1)
+        self.app.go_page(-1)
+        restored = self.app.attachments[0]
+        self.assertEqual((restored.x, restored.y), expected)
+
     async def test_legacy_highlight_remains_a_note_without_text_search(self) -> None:
         """旧文字高亮记录不丢失，但加载页面时不再进入原文查找流程。"""
         self.app.import_book(str(self.create_pdf()))

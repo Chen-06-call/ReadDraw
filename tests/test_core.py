@@ -4,6 +4,7 @@ import tempfile
 import io
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -150,6 +151,7 @@ class CoreServiceTests(unittest.TestCase):
             self.assertEqual(decoded.getpixel((50, 50)), (0, 0, 255, 255))
 
     def test_attachment_layer_moves_in_page_coordinates_and_zoom_relayouts(self) -> None:
+        """连续、重复和反向移动均跟随全局鼠标位置，不能退回每帧的局部位移。"""
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "inserted.png"
             Image.new("RGBA", (80, 40), "red").save(image_path)
@@ -160,13 +162,26 @@ class CoreServiceTests(unittest.TestCase):
                                    can_drag_attachments=lambda: True)
             canvas.set_page(Image.new("RGB", (600, 800), "white"), [attachment], [])
             self.assertEqual(len(canvas.attachment_layer.controls), 1)
-            canvas._begin_attachment_drag(attachment)
-            delta = type("Delta", (), {"x": 60, "y": 30})()
-            canvas._move_attachment(attachment, type("Event", (), {"local_delta": delta})())
-            self.assertEqual((attachment.x, attachment.y), (24 + round(60 / canvas.transform.scale), 24 + round(30 / canvas.transform.scale)))
+            for zoom in (0.5, 1.0, 2.0):
+                with self.subTest(zoom=zoom):
+                    canvas.set_zoom(zoom)
+                    attachment.x, attachment.y = 24, 24
+                    start = SimpleNamespace(global_position=SimpleNamespace(x=500, y=300))
+                    canvas._begin_attachment_drag(attachment, start)
+                    for dx, dy in ((6, 3), (12, 6), (60, 30), (60, 30), (50, 25), (-30, -30), (0, 0), (120, 80)):
+                        # 局部位移故意保持很小，复现旧代码“只能挪一点”的事件序列。
+                        event = SimpleNamespace(global_position=SimpleNamespace(x=500 + dx, y=300 + dy),
+                                                local_delta=SimpleNamespace(x=6, y=3))
+                        canvas._move_attachment(attachment, event)
+                        x, y = max(0, 24 + dx / canvas.transform.scale), max(0, 24 + dy / canvas.transform.scale)
+                        self.assertEqual((attachment.x, attachment.y), (round(x), round(y)))
+                        position = canvas.attachment_controls[attachment.id]
+                        self.assertAlmostEqual(position.left, canvas.transform.to_view(x, y)[0])
+                        self.assertAlmostEqual(position.top, canvas.transform.to_view(x, y)[1])
+                    canvas._end_attachment_drag(attachment)
             self.assertTrue(moved)
             previous_scale = canvas.transform.scale
-            self.assertTrue(canvas.set_zoom(1.5))
+            self.assertTrue(canvas.set_zoom(2.5))
             self.assertGreater(canvas.transform.scale, previous_scale)
             self.assertAlmostEqual(canvas.attachment_layer.controls[0].left, canvas.transform.to_view(attachment.x, attachment.y)[0])
 

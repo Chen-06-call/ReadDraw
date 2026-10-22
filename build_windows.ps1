@@ -1,6 +1,6 @@
 param(
     [switch]$OneDir,
-    [string]$Version = "v0.0.5"
+    [string]$Version = "v0.0.6"
 )
 
 $ErrorActionPreference = "Stop"

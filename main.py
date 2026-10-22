@@ -400,8 +400,9 @@ class ReadDrawApp:
 
     def on_attachment_move(self, _attachment: Any) -> None:
         """拖动过程中只更新图片控件，避免每一帧重绘书页。"""
-        self.status.value = "正在移动图片"
-        self.status.update()
+        if self.status.value != "正在移动图片":
+            self.status.value = "正在移动图片"
+            self.status.update()
 
     def on_attachment_end(self, attachment: Any) -> None:
         """松开鼠标后一次性保存附件位置。"""

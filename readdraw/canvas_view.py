@@ -38,6 +38,17 @@ class PageTransform:
         return self.left + x * self.scale, self.top + y * self.scale
 
 
+@dataclass(frozen=True)
+class AttachmentDrag:
+    """记录拖动开始时的固定基准，避免图片移动后局部坐标发生反馈。"""
+
+    pointer_x: float
+    pointer_y: float
+    image_x: float
+    image_y: float
+    scale: float
+
+
 class ReadingCanvas:
     """Keep the gesture detector mounted throughout an entire pen gesture.
 
@@ -83,7 +94,7 @@ class ReadingCanvas:
         self.zoom = 1.0
         self.attachments: list[Any] = []
         self.attachment_controls: dict[str, ft.Container] = {}
-        self._attachment_drag_origins: dict[str, tuple[float, float]] = {}
+        self._attachment_drags: dict[str, AttachmentDrag] = {}
         self.on_attachment_move = on_attachment_move
         self.on_attachment_end = on_attachment_end
         self.can_drag_attachments = can_drag_attachments or (lambda: True)
@@ -119,6 +130,8 @@ class ReadingCanvas:
 
     def _build_attachment_layer(self) -> None:
         """按当前缩放重建附件控件，附件位置始终保存为书页像素。"""
+        # 页面或尺寸变化会替换手势控件，旧手势不应继续修改新页面。
+        self._attachment_drags.clear()
         self.attachment_layer.controls.clear()
         self.attachment_controls.clear()
         for attachment in self.attachments:
@@ -135,9 +148,10 @@ class ReadingCanvas:
             detector = ft.GestureDetector(
                 content=image_control,
                 mouse_cursor=ft.MouseCursor.MOVE,
-                on_pan_start=lambda event, item=attachment: self._begin_attachment_drag(item),
+                drag_interval=16,
+                on_pan_start=lambda event, item=attachment: self._begin_attachment_drag(item, event),
                 on_pan_update=lambda event, item=attachment: self._move_attachment(item, event),
-                on_pan_end=lambda event, item=attachment: self._end_attachment_drag(item),
+                on_pan_end=lambda event, item=attachment: self._end_attachment_drag(item, event),
                 on_pan_cancel=lambda event, item=attachment: self._end_attachment_drag(item),
             )
             position = ft.Container(content=detector,
@@ -148,22 +162,35 @@ class ReadingCanvas:
             self.attachment_layer.controls.append(position)
             self.attachment_controls[attachment.id] = position
 
-    def _begin_attachment_drag(self, attachment: Any) -> None:
-        if self.can_drag_attachments():
-            self._attachment_drag_origins[attachment.id] = (float(attachment.x), float(attachment.y))
+    @staticmethod
+    def _global_pointer(event: Any) -> tuple[float, float] | None:
+        """全局坐标不随图片移动；不使用会随控件原点改变的局部位移。"""
+        point = getattr(event, "global_position", None)
+        if point is None:
+            return None
+        x, y = float(point.x), float(point.y)
+        return (x, y) if math.isfinite(x) and math.isfinite(y) else None
+
+    def _begin_attachment_drag(self, attachment: Any, event: Any) -> None:
+        pointer = self._global_pointer(event)
+        if self.can_drag_attachments() and pointer is not None:
+            self._attachment_drags[attachment.id] = AttachmentDrag(
+                *pointer, float(attachment.x), float(attachment.y), self.transform.scale
+            )
 
     def _move_attachment(self, attachment: Any, event: Any) -> None:
-        if not self.can_drag_attachments() or attachment.id not in self._attachment_drag_origins:
+        drag = self._attachment_drags.get(attachment.id)
+        pointer = self._global_pointer(event)
+        if not self.can_drag_attachments() or drag is None or pointer is None:
             return
-        delta = getattr(event, "local_delta", None)
-        if delta is None:
-            return
-        origin_x, origin_y = self._attachment_drag_origins[attachment.id]
-        attachment.x = max(0, round(origin_x + float(delta.x) / self.transform.scale))
-        attachment.y = max(0, round(origin_y + float(delta.y) / self.transform.scale))
+        # 每一帧都相对同一窗口坐标基准计算，事件合并、重复或反向拖动均不会累积误差。
+        x = max(0.0, drag.image_x + (pointer[0] - drag.pointer_x) / drag.scale)
+        y = max(0.0, drag.image_y + (pointer[1] - drag.pointer_y) / drag.scale)
+        attachment.x, attachment.y = round(x), round(y)
         position = self.attachment_controls.get(attachment.id)
         if position is not None:
-            position.left, position.top = self.transform.to_view(attachment.x, attachment.y)
+            # 显示保留亚像素精度，避免缩放后整像素取整使图片一格一格跳动。
+            position.left, position.top = self.transform.to_view(x, y)
             try:
                 position.update()
             except RuntimeError:
@@ -172,8 +199,13 @@ class ReadingCanvas:
         if self.on_attachment_move:
             self.on_attachment_move(attachment)
 
-    def _end_attachment_drag(self, attachment: Any) -> None:
-        self._attachment_drag_origins.pop(attachment.id, None)
+    def _end_attachment_drag(self, attachment: Any, event: Any = None) -> None:
+        if attachment.id not in self._attachment_drags:
+            return
+        # 拖动事件有节流，结束事件中的坐标可能比最后一次移动更新更靠后。
+        if event is not None:
+            self._move_attachment(attachment, event)
+        self._attachment_drags.pop(attachment.id)
         if self.on_attachment_end:
             self.on_attachment_end(attachment)
 
