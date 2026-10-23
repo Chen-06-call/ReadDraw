@@ -18,6 +18,14 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 
 ## 运行
 
+### v0.0.8 图片插入与发布修复
+
+- Windows 图片选择框在独立的辅助进程运行，避免文件选择插件或外壳扩展异常带走主程序；关闭应用时会结束未完成的选择。
+- 图片完整解码、修正照片方向并转为标准 PNG 后再保存。取消、损坏图片和选择窗口异常会在状态栏反馈。
+- 插入图片仅更新附件图层，保留当前书页、笔迹和撤销记录。
+- GitHub Actions 显式安装 `requirements-build.txt`，包含 Flet CLI、桌面运行时和 PyInstaller，不依赖开发电脑上已有的包。
+- `python tools/verify_image_insert.py` 打开隔离书库，供实际操作系统选择框验证；加 `--pick-now` 自动调用工具栏的同一插入回调。记录和截图在 `.build-deps/image-insert-verification`。
+
 ### v0.0.6 图片拖动修复
 
 - 图片拖动按鼠标在窗口中的绝对位置计算，避免局部坐标随图片移动而造成回跳。
@@ -37,6 +45,8 @@ python main.py
 - `readdraw/config.py`：应用目录与渲染配置
 - `readdraw/models.py`：书籍、文字标注和附件模型
 - `readdraw/storage.py`：SQLite、本地附件和同步快照
+- `readdraw/file_dialogs.py`：系统图片选择窗口及独立辅助进程生命周期
+- `readdraw/image_import.py`：图片附件校验与标准 PNG 编码
 - `readdraw/pdf.py`：PDF 打开和页面渲染
 - `readdraw/epub.py`：EPUB 文本解析和分页渲染
 - `readdraw/reader.py`：PDF / EPUB 统一阅读器接口
@@ -62,31 +72,41 @@ python main.py
 ## Windows 打包
 
 ```powershell
-.\build_windows.ps1 -Version v0.0.6
+python -m pip install -r requirements-build.txt
+.\build_windows.ps1 -Version v0.0.8
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成带版本号的 exe、SHA256 校验文件和 `update.json`。如果希望生成便于分发的文件夹版本：
 
 Windows 版暂时停用资源管理器拖入功能，避免向 Flet 原生窗口注入 DLL 引发崩溃；请使用“打开文件”按钮导入文档。
 
-如果系统安装了 NSIS，脚本还会生成 `release\ReadDraw-Setup-v0.0.6.exe` 安装包。安装包会创建桌面快捷方式，并将程序安装到当前用户目录，不需要管理员权限。
+如果系统安装了 NSIS，脚本还会生成 `release\ReadDraw-Setup-v0.0.8.exe` 安装包。安装包会创建桌面快捷方式，并将程序安装到当前用户目录，不需要管理员权限。发布构建使用 `-RequireInstaller`，NSIS 缺失时会明确报错。脚本保留 UTF-8 BOM，以兼容 Windows PowerShell 5.1 中的中文注释。
 
 桌面包排除了可选的 `pymupdf.layout` / ONNX 布局分析组件，PDF 显示和文字搜索使用 MuPDF。这样可以避免不必要的模型加载和相关本机组件启动崩溃。
 
 ```powershell
-.\build_windows.ps1 -Version v0.0.6 -OneDir
+.\build_windows.ps1 -Version v0.0.8 -OneDir
 ```
 
 ## 远程更新发布
 
-推送 `v0.0.6` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
+推送 `v0.0.8` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
 
 ```powershell
 git add .
-git commit -m "Prepare ReadDraw v0.0.6"
+git commit -m "Prepare ReadDraw v0.0.8"
 git push origin main
-git tag v0.0.6
-git push origin v0.0.6
+git tag v0.0.8
+git push origin v0.0.8
 ```
 
 GitHub Actions 文件位于 `.github/workflows/release.yml`。源码运行时只支持检查版本，不会替换 Python 环境。
+
+也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.0.8`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
+
+如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写 `v0.0.8`：
+
+- `release/ReadDraw-Setup-v0.0.8.exe`：安装包，供首次安装。
+- `release/ReadDraw-v0.0.8-windows-x64.exe`：主程序，供免安装运行与自动更新。
+- `release/ReadDraw-v0.0.8-windows-x64.exe.sha256`：主程序校验文件。
+- `release/update.json`：版本及 SHA256 清单，必须与同次构建的主程序配套。

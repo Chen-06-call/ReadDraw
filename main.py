@@ -5,8 +5,16 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import Any
+
+# 选择器辅助进程不启动 Flet、数据库或同步服务，也不使用窗口程序的标准输出。
+if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--select-image-file":
+    from readdraw.file_dialogs import run_image_picker_helper
+
+    run_image_picker_helper(sys.argv[2])
+    raise SystemExit(0)
 
 from readdraw import config
 from readdraw.diagnostics import configure_logging
@@ -18,6 +26,7 @@ if __name__ == "__main__":
 import flet as ft
 from PIL import Image as PILImage
 from readdraw.data_location import migrate_data_dir
+from readdraw.file_dialogs import ImageFileDialog
 from readdraw.canvas_view import ReadingCanvas
 from readdraw.drawing import (
     MARKER_COLOR, MARKER_OPACITY, MARKER_WIDTH_MULTIPLIER,
@@ -54,6 +63,7 @@ class ReadDrawApp:
         self.thickness = 4
         self._closed = False
         self._closing = False
+        self._image_importing = False
         self.alt_pressed = False
         configured_background = config.get_setting("background", config.DEFAULT_BACKGROUND)
         self.background_color = configured_background if configured_background in config.BACKGROUND_OPTIONS.values() else config.DEFAULT_BACKGROUND
@@ -78,6 +88,7 @@ class ReadDrawApp:
         self.page_label = ft.Text("未打开书籍", size=13, color="#475467")
         self.file_picker = ft.FilePicker()
         self.image_picker = ft.FilePicker()
+        self.image_dialog = ImageFileDialog()
         self.sync_server = SyncServer()
         self.pending_release: ReleaseInfo | None = None
         self.build()
@@ -256,17 +267,45 @@ class ReadDrawApp:
             self.show_error(f"更新失败：{exc}")
 
     async def open_image_picker(self, _=None) -> None:
+        """串行完成选择、校验和附件更新，异常只在状态栏提示。"""
+        if self._closed or self._image_importing:
+            return
         if not self.book:
             self.show_error("请先打开一本书")
             return
-        files = await self.image_picker.pick_files(
-            dialog_title="选择要插入的图片",
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE,
-        )
-        if files and files[0].path:
-            self.store.add_attachment(self.book.id, self.page_index, files[0].path)
-            self.load_page()
+        self._image_importing = True
+        self.image_btn.disabled = True
+        self.image_btn.update()
+        book_id, page_index = self.book.id, self.page_index
+        logger = logging.getLogger("readdraw")
+        try:
+            logger.info("打开图片选择窗口")
+            selected = await self.image_dialog.pick_file(self.image_picker)
+            if not selected or self._closed:
+                return
+            # 系统对话框打开期间允许切换阅读页面，不能把图片插入错误的位置。
+            if not self.book or (self.book.id, self.page_index) != (book_id, page_index):
+                self.show_error("阅读页面已切换，请在目标页重新插入图片")
+                return
+            logger.info("图片选择完成，开始校验并保存附件")
+            self.finish_drawing()
+            attachment = self.store.add_attachment(book_id, page_index, selected)
+            self.attachments = self.store.attachments(book_id, page_index)
+            # 不重新渲染 PDF 或替换整个阅读区，减少原生选择框返回时的控件变更。
+            self.drawing_view.set_attachments(self.attachments)
+            self.status.value = "图片已插入，选择鼠标工具可以移动"
+            self.status.color = "#217567"
+            self.status.update()
+            logger.info("图片插入完成：%s", attachment.id)
+        except Exception as exc:
+            logger.exception("插入图片失败")
+            if not self._closed:
+                self.show_error(f"无法插入图片：{exc}")
+        finally:
+            self._image_importing = False
+            if not self._closed:
+                self.image_btn.disabled = False
+                self.image_btn.update()
 
     def import_book(self, path: str) -> None:
         try:
@@ -559,6 +598,7 @@ class ReadDrawApp:
         if self._closed:
             return
         self._closed = True
+        self.image_dialog.close()
         logger = logging.getLogger("readdraw")
         try:
             self.finish_drawing()

@@ -222,6 +222,74 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         restored = self.app.attachments[0]
         self.assertEqual((restored.x, restored.y), expected)
 
+    async def test_image_picker_inserts_without_reloading_reader_or_losing_undo(self) -> None:
+        """覆盖原先遗漏的按钮完整回调；导入后书页与撤销历史应保持不变。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        source = self.root / "中文图片.jpg"
+        Image.new("RGB", (320, 160), "red").save(source)
+        original_src = self.app.drawing_view.image.src
+        self.app.history.append([])
+        with (
+            patch.object(self.app.image_dialog, "pick_file", new=AsyncMock(return_value=str(source))),
+            patch.object(self.app, "load_page") as reload_page,
+        ):
+            await self.app.open_image_picker()
+        reload_page.assert_not_called()
+        self.assertEqual(self.app.history, [[]])
+        self.assertIs(self.app.drawing_view.image.src, original_src)
+        self.assertEqual(len(self.app.attachments), 1)
+        attachment = self.app.attachments[0]
+        self.assertEqual(attachment.name, source.name)
+        with Image.open(attachment.path) as saved:
+            self.assertEqual(saved.format, "PNG")
+        self.assertIn(attachment.id, self.app.drawing_view.attachment_controls)
+        self.assertFalse(self.app.image_btn.disabled)
+        self.assertFalse(self.app._closed)
+
+    async def test_invalid_image_and_picker_errors_leave_app_usable(self) -> None:
+        """损坏图片、失效路径或选择器异常都只提示错误，且不留下无效附件。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        corrupt = self.root / "corrupt.png"
+        corrupt.write_text("not an image")
+        for selection in (corrupt, self.root / "missing.png"):
+            with patch.object(self.app.image_dialog, "pick_file", new=AsyncMock(return_value=str(selection))):
+                await self.app.open_image_picker()
+            self.assertEqual(self.app.store.attachments(self.app.book.id, 0), [])
+            self.assertFalse(self.app.image_btn.disabled)
+            self.assertFalse(self.app._closed)
+            self.assertIn("无法插入图片", self.app.status.value)
+        with patch.object(self.app.image_dialog, "pick_file", new=AsyncMock(side_effect=OSError("dialog failed"))):
+            await self.app.open_image_picker()
+        self.assertIn("dialog failed", self.app.status.value)
+        self.assertEqual(list(self.app.store.attachment_dir.iterdir()), [])
+        self.app.go_page(1)
+        self.assertEqual(self.app.page_index, 1)
+
+    async def test_image_selection_cancel_reentry_and_page_change(self) -> None:
+        """取消、重复点击、选择期间翻页都不能误写入另一页面。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        with patch.object(self.app.image_dialog, "pick_file", new=AsyncMock(return_value=None)):
+            await self.app.open_image_picker()
+        selected = asyncio.Future()
+        with patch.object(self.app.image_dialog, "pick_file", new=AsyncMock(return_value=None)) as pick:
+            async def wait_for_selection(_picker):
+                return await selected
+            pick.side_effect = wait_for_selection
+            task = asyncio.create_task(self.app.open_image_picker())
+            await asyncio.sleep(0)
+            await self.app.open_image_picker()
+            pick.assert_awaited_once()
+            self.app.go_page(1)
+            selected.set_result(str(self.root / "unused.png"))
+            await task
+        self.assertEqual(self.app.store.attachments(self.app.book.id, 0), [])
+        self.assertEqual(self.app.store.attachments(self.app.book.id, 1), [])
+        self.assertIn("阅读页面已切换", self.app.status.value)
+        self.assertFalse(self.app.image_btn.disabled)
+
     async def test_legacy_highlight_remains_a_note_without_text_search(self) -> None:
         """旧文字高亮记录不丢失，但加载页面时不再进入原文查找流程。"""
         self.app.import_book(str(self.create_pdf()))

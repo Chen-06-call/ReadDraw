@@ -162,6 +162,12 @@ class ReadingCanvas:
             self.attachment_layer.controls.append(position)
             self.attachment_controls[attachment.id] = position
 
+    def set_attachments(self, attachments: list) -> None:
+        """只更新附件层，插入图片时保留书页、笔迹和正在使用的画布控件。"""
+        self.attachments = attachments
+        self._build_attachment_layer()
+        self.attachment_layer.update()
+
     @staticmethod
     def _global_pointer(event: Any) -> tuple[float, float] | None:
         """全局坐标不随图片移动；不使用会随控件原点改变的局部位移。"""

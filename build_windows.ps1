@@ -1,14 +1,26 @@
-param(
+﻿param(
     [switch]$OneDir,
-    [string]$Version = "v0.0.6"
+    [string]$Version = "v0.0.8",
+    [switch]$RequireInstaller
 )
 
 $ErrorActionPreference = "Stop"
+# 固定工作目录，避免从其他文件夹启动脚本时找不到源码与依赖清单。
+Set-Location -LiteralPath $PSScriptRoot
+python -c "import flet_cli, flet_desktop, PyInstaller"
+if ($LASTEXITCODE -ne 0) {
+    throw "Build dependencies are missing. Run: python -m pip install -r requirements-build.txt"
+}
 $normalizedVersion = $Version.Trim().TrimStart("v")
 if ($normalizedVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must look like v0.0.0 or 0.0.0."
 }
 $env:READDRAW_VERSION = $normalizedVersion
+# 发布版本必须与源码默认版本相同；环境变量不会自动写入冻结后的程序。
+$sourceVersion = python -c "import os; os.environ.pop('READDRAW_VERSION', None); from readdraw.version import APP_VERSION; print(APP_VERSION)"
+if ($LASTEXITCODE -ne 0 -or $sourceVersion.Trim() -ne $normalizedVersion) {
+    throw "Release version does not match readdraw/version.py. Update APP_VERSION before building."
+}
 $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 $flet = Join-Path $scripts.Trim() "flet.exe"
 if (-not (Test-Path -LiteralPath $flet)) {
@@ -16,14 +28,16 @@ if (-not (Test-Path -LiteralPath $flet)) {
     $flet = Join-Path $env:APPDATA "Python\$($pythonFolder.Trim())\Scripts\flet.exe"
 }
 if (-not (Test-Path -LiteralPath $flet)) {
-    throw "Flet CLI was not found. Install dependencies with: python -m pip install -r requirements.txt"
+    throw "Flet CLI was not found. Install dependencies with: python -m pip install -r requirements-build.txt"
 }
 $iconPath = Join-Path (Get-Location) "assets\ReadDraw.ico"
 if (-not (Test-Path -LiteralPath $iconPath)) {
     throw "Application icon not found: $iconPath"
 }
 $arguments = @(
-    "pack", "main.py", "--name", "ReadDraw", "--icon", $iconPath, "--distpath", "dist", "--yes"
+    "pack", "main.py", "--name", "ReadDraw", "--icon", $iconPath, "--distpath", "dist", "--yes",
+    "--product-name", "ReadDraw", "--product-version", $normalizedVersion,
+    "--file-version", "$normalizedVersion.0"
 )
 if ($OneDir) {
     $arguments += "--onedir"
@@ -61,9 +75,17 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releaseDirectory "update.json") -Encoding utf8
 $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
-if ($makensis) {
+$nsisPath = if ($makensis) { $makensis.Source } else {
+    # Chocolatey 安装 NSIS 后，当前 Actions 进程的 PATH 可能尚未刷新。
+    @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") |
+        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+if ($RequireInstaller -and -not $nsisPath) {
+    throw "NSIS was not found. Install NSIS before building the release."
+}
+if ($nsisPath) {
     $installerScript = Join-Path (Get-Location) "installer\ReadDraw.nsi"
-    & $makensis.Source "/DAPP_VERSION=$normalizedVersion" "/DEXE_PATH=$sourceExe" $installerScript
+    & $nsisPath "/DAPP_VERSION=$normalizedVersion" "/DEXE_PATH=$sourceExe" $installerScript
     if ($LASTEXITCODE -ne 0) {
         throw "NSIS installer build failed."
     }

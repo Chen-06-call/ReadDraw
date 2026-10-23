@@ -10,3 +10,6 @@ release/
 .build-deps/
 .gitconfig-flutter
 *.spec
+.git-codex*/
+ReadDraw-v*-release-assets.zip
+ReadDraw-v*.bundle

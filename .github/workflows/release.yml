@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布标签，须与 readdraw/version.py 中的版本一致（如 v0.0.8）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,6 +17,8 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,7 +31,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
+
+      - name: Test application
+        run: python -m unittest discover -s tests -v
 
       - name: Install NSIS
         shell: powershell
@@ -31,15 +42,15 @@ jobs:
 
       - name: Build Windows package
         shell: powershell
-        env:
-          RELEASE_VERSION: ${{ github.ref_name }}
-        run: .\build_windows.ps1 -Version $env:RELEASE_VERSION
+        run: .\build_windows.ps1 -Version $env:RELEASE_VERSION -RequireInstaller
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_VERSION }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             release/ReadDraw-*-windows-x64.exe
             release/ReadDraw-Setup-v*.exe

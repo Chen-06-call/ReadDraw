@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import base64
-import shutil
 import sqlite3
 import uuid
 from datetime import datetime
@@ -14,6 +13,7 @@ from pathlib import Path
 
 from . import config
 from .models import Attachment, Book, TextAnnotation
+from .image_import import save_attachment_image
 
 
 class Store:
@@ -91,11 +91,18 @@ class Store:
         self.attachment_dir.mkdir(parents=True, exist_ok=True)
         attachment_id = str(uuid.uuid4())
         source = Path(source_path)
-        target = self.attachment_dir / f"{attachment_id}{source.suffix.lower()}"
-        shutil.copy2(source, target)
-        attachment = Attachment(attachment_id, book_id, page, str(target), source.name, 24, 24, 240, 180, datetime.now().isoformat(timespec="seconds"))
-        self.db.execute("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?,?)", tuple(attachment.__dict__.values()))
-        self.db.commit()
+        target = self.attachment_dir / f"{attachment_id}.png"
+        try:
+            width, height = save_attachment_image(source, target)
+            attachment = Attachment(attachment_id, book_id, page, str(target), source.name,
+                                    24, 24, width, height, datetime.now().isoformat(timespec="seconds"))
+            self.db.execute("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?,?)", tuple(attachment.__dict__.values()))
+            self.db.commit()
+        except Exception:
+            # 文件与数据库作为一个导入操作；失败时不留下半张图片或无效记录。
+            self.db.rollback()
+            target.unlink(missing_ok=True)
+            raise
         return attachment
 
     def attachments(self, book_id: str, page: int) -> list[Attachment]:

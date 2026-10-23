@@ -1,0 +1,5 @@
+# 打包环境必须显式安装构建工具，不能依赖开发电脑已安装的全局包。
+-r requirements.txt
+flet-cli==1.0.4
+flet-desktop==1.0.4
+PyInstaller>=6.11,<7
