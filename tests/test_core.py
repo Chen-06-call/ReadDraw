@@ -10,7 +10,9 @@ from unittest.mock import patch
 import flet as ft
 from PIL import Image
 
-from readdraw.drawing import compose_page, point_near_stroke
+from readdraw.drawing import (
+    compose_page, mouse_speed_pressure, point_near_stroke, pressure_width,
+)
 from readdraw.pdf import open_pdf, render_page
 from readdraw.epub import EpubDocument
 from readdraw.storage import Store
@@ -25,6 +27,30 @@ from readdraw.data_location import migrate_data_dir
 
 
 class CoreServiceTests(unittest.TestCase):
+    def test_mouse_speed_maps_to_simulated_pressure(self) -> None:
+        """鼠标移动越慢模拟压力越大，速度上限处压力归零。"""
+        self.assertGreater(mouse_speed_pressure(200), mouse_speed_pressure(1200))
+        self.assertEqual(mouse_speed_pressure(1800), 0.0)
+        self.assertEqual(mouse_speed_pressure(-10), 1.0)
+
+    def test_pressure_changes_pen_width_in_export_and_live_canvas(self) -> None:
+        """压感笔迹在导出图和实时矢量层中都按压力改变粗细。"""
+        stroke = {
+            "tool": "pen", "color": "#E45756", "width": 8,
+            "points": [[10, 25], [30, 25], [50, 25], [70, 25]],
+            "pressures": [0.0, 0.0, 1.0, 1.0],
+        }
+        exported = compose_page(Image.new("RGB", (80, 50), "white"), [stroke])
+        self.assertEqual(exported.getpixel((20, 20)), (255, 255, 255, 255))
+        self.assertEqual(exported.getpixel((60, 20)), (228, 87, 86, 255))
+        self.assertEqual(pressure_width(8, 0.65), 8.0)
+
+        canvas = ReadingCanvas(lambda event: None, lambda event: None, lambda event: None)
+        canvas.set_page(Image.new("RGB", (80, 50), "white"), [], [stroke])
+        self.assertEqual(len(canvas.ink.shapes), 3)
+        self.assertLess(canvas.ink.shapes[0].paint.stroke_width,
+                        canvas.ink.shapes[-1].paint.stroke_width)
+
     def test_marker_export_blends_color_without_hiding_text(self) -> None:
         """半透明荧光笔必须和白纸、黑字混合，导出的纸面仍不透明。"""
         base = Image.new("RGB", (100, 40), "white")
@@ -163,6 +189,22 @@ class CoreServiceTests(unittest.TestCase):
         self.assertAlmostEqual(frame.width / frame.height, 4)
         with Image.open(io.BytesIO(canvas.image.src)) as decoded:
             self.assertEqual(decoded.getpixel((50, 50)), (0, 0, 255, 255))
+
+    def test_zoomed_page_pan_is_clamped_and_resettable(self) -> None:
+        """放大页面只能在边界内拖动，重置后恢复居中。"""
+        canvas = ReadingCanvas(lambda event: None, lambda event: None, lambda event: None,
+                               can_pan_page=lambda: True)
+        canvas.set_viewport(400, 400)
+        canvas.set_page(Image.new("RGB", (400, 400), "white"), [], [])
+        canvas.set_zoom(2.0)
+        canvas._begin_page_pan(SimpleNamespace(global_position=SimpleNamespace(x=100.0, y=100.0)))
+        canvas._update_pointer(SimpleNamespace(global_position=SimpleNamespace(x=-1000.0, y=-1000.0)))
+        canvas._end_pointer()
+        self.assertLessEqual(canvas.transform.left + canvas.transform.width, canvas.viewport[0] + 0.001)
+        self.assertLessEqual(canvas.transform.top + canvas.transform.height, canvas.viewport[1] + 0.001)
+        self.assertTrue(canvas.reset_view())
+        self.assertEqual(canvas.zoom, 1.0)
+        self.assertEqual(canvas.pan_offset, (0.0, 0.0))
 
     def test_attachment_layer_moves_in_page_coordinates_and_zoom_relayouts(self) -> None:
         """连续、重复和反向移动均跟随全局鼠标位置，不能退回每帧的局部位移。"""

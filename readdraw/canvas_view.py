@@ -8,7 +8,7 @@ import flet as ft
 import flet.canvas as cv
 from PIL import Image
 
-from .drawing import compose_page, image_data
+from .drawing import compose_page, image_data, pressure_width
 from .attachment_tools import image_toolbar, scaled_image_size
 
 
@@ -61,6 +61,16 @@ class AttachmentResizeDrag:
     scale: float
 
 
+@dataclass(frozen=True)
+class PagePan:
+    """固定手势开始点和画页偏移，避免拖动过程中产生坐标反馈。"""
+
+    pointer_x: float
+    pointer_y: float
+    offset_x: float
+    offset_y: float
+
+
 class ReadingCanvas:
     """Keep the gesture detector mounted throughout an entire pen gesture.
 
@@ -75,7 +85,9 @@ class ReadingCanvas:
                  on_attachment_resize: Callable | None = None,
                  on_attachment_delete: Callable | None = None,
                  can_drag_attachments: Callable[[], bool] | None = None,
-                 on_zoom: Callable | None = None) -> None:
+                 on_zoom: Callable | None = None,
+                 can_pan_page: Callable[[], bool] | None = None,
+                 on_pressure: Callable[[float], None] | None = None) -> None:
         self.image = ft.Image(
             src=b"", fit=ft.BoxFit.FILL, visible=False,
             error_content=ft.Text("书页显示失败，请重新打开文件", color="#B42318"),
@@ -90,11 +102,15 @@ class ReadingCanvas:
             mouse_cursor=ft.MouseCursor.PRECISE,
             drag_interval=16,
             on_pan_down=on_start,
-            on_pan_update=on_move,
-            on_pan_end=on_end,
-            on_pan_cancel=on_end,
+            on_pan_start=self._begin_page_pan,
+            on_pan_update=self._update_pointer,
+            on_pan_end=self._end_pointer,
+            on_pan_cancel=self._cancel_pointer,
             on_tap_up=on_end,
             on_scroll=on_zoom,
+            on_force_press_start=self._update_pressure,
+            on_force_press_peak=self._update_pressure,
+            on_force_press_update=self._update_pressure,
         )
         # Never use expand=True on Canvas: Flet serializes it as infinite
         # width/height. A centered container supplies loose constraints, which
@@ -106,6 +122,8 @@ class ReadingCanvas:
         self.page_size = (1, 1)
         self.transform = PageTransform.fit(1, 1, *self.viewport)
         self.zoom = 1.0
+        self.pan_offset = (0.0, 0.0)
+        self._page_pan: PagePan | None = None
         self.attachments: list[Any] = []
         self.attachment_controls: dict[str, ft.Container] = {}
         self.attachment_detectors: dict[str, ft.GestureDetector] = {}
@@ -120,6 +138,11 @@ class ReadingCanvas:
         self.on_attachment_resize = on_attachment_resize
         self.on_attachment_delete = on_attachment_delete
         self.can_drag_attachments = can_drag_attachments or (lambda: True)
+        self.can_pan_page = can_pan_page or (lambda: False)
+        self.on_zoom = on_zoom
+        self.on_pressure = on_pressure
+        self.on_pointer_move = on_move
+        self.on_pointer_end = on_end
         self.strokes: list[dict[str, Any]] = []
         self.active_path: cv.Path | None = None
         self.layout()
@@ -143,8 +166,12 @@ class ReadingCanvas:
         fitted = PageTransform.fit(*self.page_size, *self.viewport)
         scale = fitted.scale * self.zoom
         width, height = self.page_size[0] * scale, self.page_size[1] * scale
-        self.transform = PageTransform(scale, (self.viewport[0] - width) / 2,
-                                       (self.viewport[1] - height) / 2, width, height)
+        base_left = (self.viewport[0] - width) / 2
+        base_top = (self.viewport[1] - height) / 2
+        offset_x, offset_y = self._clamp_pan(*self.pan_offset, width, height, base_left, base_top)
+        self.pan_offset = (offset_x, offset_y)
+        self.transform = PageTransform(scale, base_left + offset_x,
+                                       base_top + offset_y, width, height)
         t = self.transform
         self.page_frame.left, self.page_frame.top = t.left, t.top
         self.page_frame.width, self.page_frame.height = t.width, t.height
@@ -182,6 +209,7 @@ class ReadingCanvas:
                 mouse_cursor=ft.MouseCursor.MOVE,
                 drag_interval=16,
                 on_tap_up=lambda event, item=attachment: self._select_attachment(item),
+                on_scroll=self._on_zoom,
                 on_pan_start=lambda event, item=attachment: self._begin_attachment_drag(item, event),
                 on_pan_update=lambda event, item=attachment: self._move_attachment(item, event),
                 on_pan_end=lambda event, item=attachment: self._end_attachment_drag(item, event),
@@ -413,8 +441,99 @@ class ReadingCanvas:
         if abs(value - self.zoom) < 0.001:
             return False
         self.zoom = value
+        if self.can_pan_page():
+            self.detector.mouse_cursor = (
+                ft.MouseCursor.GRAB if value > 1.0 else ft.MouseCursor.BASIC
+            )
+        else:
+            self.detector.mouse_cursor = ft.MouseCursor.PRECISE
         self.layout()
         return True
+
+    def reset_view(self, relayout: bool = True) -> bool:
+        """翻页或适合窗口操作时恢复默认比例和居中位置。"""
+        changed = self.zoom != 1.0 or self.pan_offset != (0.0, 0.0)
+        self.zoom = 1.0
+        self.pan_offset = (0.0, 0.0)
+        self._page_pan = None
+        self.detector.mouse_cursor = (
+            ft.MouseCursor.BASIC if self.can_pan_page() else ft.MouseCursor.PRECISE
+        )
+        if relayout:
+            self.layout()
+        return changed
+
+    def _clamp_pan(self, x: float, y: float, width: float, height: float,
+                   base_left: float, base_top: float) -> tuple[float, float]:
+        """缩放后允许拖动画页，但不让边缘露出空白。"""
+        minimum_x, maximum_x = self.viewport[0] - width - base_left, -base_left
+        minimum_y, maximum_y = self.viewport[1] - height - base_top, -base_top
+        bounded_x = max(minimum_x, min(maximum_x, x)) if width > self.viewport[0] else 0.0
+        bounded_y = max(minimum_y, min(maximum_y, y)) if height > self.viewport[1] else 0.0
+        return bounded_x, bounded_y
+
+    @staticmethod
+    def _pointer(event: Any) -> tuple[float, float] | None:
+        point = getattr(event, "global_position", None)
+        if point is not None:
+            x, y = float(point.x), float(point.y)
+        else:
+            x = getattr(event, "global_x", None)
+            y = getattr(event, "global_y", None)
+            if x is None or y is None:
+                return None
+            x, y = float(x), float(y)
+        return (x, y) if math.isfinite(x) and math.isfinite(y) else None
+
+    def _begin_page_pan(self, event: Any) -> None:
+        pointer = self._pointer(event)
+        if self.zoom <= 1.0 or not self.can_pan_page() or pointer is None:
+            return
+        self._page_pan = PagePan(*pointer, *self.pan_offset)
+        self.detector.mouse_cursor = ft.MouseCursor.GRABBING
+
+    def _move_page_pan(self, event: Any) -> bool:
+        drag = self._page_pan
+        pointer = self._pointer(event)
+        if drag is None or pointer is None:
+            return False
+        offset = (drag.offset_x + pointer[0] - drag.pointer_x,
+                  drag.offset_y + pointer[1] - drag.pointer_y)
+        if offset == self.pan_offset:
+            return True
+        self.pan_offset = offset
+        self.layout()
+        try:
+            self.control.update()
+        except RuntimeError:
+            pass
+        return True
+
+    def _end_page_pan(self, event: Any = None) -> bool:
+        if self._page_pan is None:
+            return False
+        if event is not None:
+            self._move_page_pan(event)
+        self._page_pan = None
+        self.detector.mouse_cursor = ft.MouseCursor.GRAB
+        return True
+
+    def _update_pointer(self, event: Any) -> None:
+        if not self._move_page_pan(event):
+            self.on_pointer_move(event)
+
+    def _end_pointer(self, event: Any = None) -> None:
+        if not self._end_page_pan(event):
+            self.on_pointer_end(event)
+
+    def _cancel_pointer(self, event: Any) -> None:
+        if not self._end_page_pan():
+            self.on_pointer_end(event)
+
+    def _on_zoom(self, event: Any) -> None:
+        """画布和位于其上方的图片附件共用滚轮处理。"""
+        if self.on_zoom:
+            self.on_zoom(event)
 
     def set_viewport(self, width: float, height: float) -> bool:
         """Accept measured finite host bounds, never the renderer's own size."""
@@ -440,32 +559,76 @@ class ReadingCanvas:
             x, y = float(event.local_x), float(event.local_y)
         return self.transform.to_page(x, y, clamp)
 
-    def _shape(self, stroke: dict) -> cv.Path:
+    def _shape(self, stroke: dict, start: int = 0, end: int | None = None) -> cv.Path:
         points = [self.transform.to_view(*point) for point in stroke["points"]]
+        if end is None:
+            end = len(points)
+        points = points[start:end]
         elements = [cv.Path.MoveTo(*points[0]), cv.Path.LineTo(*points[0])]
         elements.extend(cv.Path.LineTo(*point) for point in points[1:])
         # 界面与 PNG 导出使用同一份透明度，重启或翻页后荧光笔颜色保持一致。
         color = ft.Colors.with_opacity(stroke.get("opacity", 1.0), stroke["color"])
+        pressures = stroke.get("pressures", [])
+        width = stroke["width"]
+        if pressures:
+            selected = pressures[start:end]
+            width = pressure_width(width, sum(selected) / len(selected))
         return cv.Path(elements, paint=ft.Paint(
-            color=color, stroke_width=stroke["width"] * self.transform.scale,
+            color=color, stroke_width=width * self.transform.scale,
             style=ft.PaintingStyle.STROKE, stroke_cap=ft.StrokeCap.ROUND, stroke_join=ft.StrokeJoin.ROUND))
+
+    def _stroke_shapes(self, stroke: dict) -> list[cv.Path]:
+        points = stroke.get("points", [])
+        pressures = stroke.get("pressures", [])
+        if len(points) < 2 or len(pressures) != len(points):
+            return [self._shape(stroke)] if points else []
+        return [self._shape(stroke, index, index + 2) for index in range(len(points) - 1)]
 
     def set_strokes(self, strokes: list[dict]) -> None:
         self.strokes = strokes
-        self.ink.shapes = [self._shape(stroke) for stroke in strokes if stroke.get("points")]
+        self.ink.shapes = [shape for stroke in strokes for shape in self._stroke_shapes(stroke)]
         self.active_path = None
 
     def begin(self, stroke: dict) -> None:
-        self.active_path = self._shape(stroke)
-        self.ink.shapes.append(self.active_path)
+        shapes = self._stroke_shapes(stroke)
+        self.ink.shapes.extend(shapes)
+        self.active_path = shapes[-1] if shapes else None
         self.ink.update()
 
-    def append(self, x: float, y: float) -> None:
-        if self.active_path is not None:
-            self.active_path.elements.append(cv.Path.LineTo(*self.transform.to_view(x, y)))
+    def append(self, x: float, y: float, pressure: float = 0.65,
+               stroke: dict | None = None) -> None:
+        if self.active_path is not None and stroke is not None:
+            previous_index = len(stroke["points"]) - 2
+            self.active_path = self._shape(stroke, previous_index, previous_index + 2)
+            self.ink.shapes.append(self.active_path)
         else:
             # A resize during drawing has reprojected all shapes.
             self.set_strokes(self.strokes)
             if self.ink.shapes:
                 self.active_path = self.ink.shapes[-1]
+            if self.active_path is not None:
+                self.active_path.elements.append(cv.Path.LineTo(*self.transform.to_view(x, y)))
         self.ink.update()
+
+    def update_active_pressure(self, pressure: float) -> None:
+        """更新当前笔迹末端的压力和实时显示粗细。"""
+        if self.active_path is None or not self.strokes:
+            return
+        stroke = self.strokes[-1]
+        pressures = stroke.get("pressures")
+        if not pressures:
+            return
+        pressures[-1] = pressure
+        if len(pressures) > 1:
+            segment_pressure = (pressures[-2] + pressure) / 2
+        else:
+            segment_pressure = pressure
+        self.active_path.paint.stroke_width = pressure_width(
+            stroke["width"], segment_pressure
+        ) * self.transform.scale
+        self.active_path.update()
+
+    def _update_pressure(self, event: Any) -> None:
+        pressure = getattr(event, "pressure", None)
+        if pressure is not None and self.on_pressure:
+            self.on_pressure(pressure)

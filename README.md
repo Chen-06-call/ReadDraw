@@ -12,11 +12,30 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 - 插入图片附件并合成到页面导出图；选中图片后可拖动、等比例缩放或删除
 - 按住 Alt + 鼠标滚轮可以放大或缩小阅读页面
 - 画笔使用实时矢量图层，拖动时立即显示笔迹和笔刷位置
+- 支持压感设备：压力越大笔迹越粗；普通鼠标按移动速度模拟压感，慢画偏粗、快画偏细
 - 可通过侧边栏“设置”更换阅读背景，并迁移 SQLite、附件和导出文件
 - 启动 FastAPI 局域网同步服务，默认 `8765` 端口
 - SQLite 本地保存，支持当前页 PNG 导出
 
 ## 运行
+
+### v0.1.1 鼠标模拟压感
+
+- 鼠标绘画按移动速度模拟压力，慢画逐渐加粗、快画逐渐变细，并平滑线宽变化。
+- 压感笔仍优先使用设备提供的真实压力数据；两种压力值都会随笔迹保存并用于 PNG 导出。
+
+### v0.1.0 画笔压感
+
+- 接入 Flet 压感事件，压感设备绘制时会实时调整笔迹粗细。
+- 压感值会随笔迹保存，撤销、重开书籍和 PNG 导出保持一致。
+- 普通鼠标和不提供压力数据的设备继续使用固定粗细，不影响原有绘画。
+
+### v0.0.14 翻页与放大拖动
+
+- 阅读区滚轮覆盖书页和图片附件区域；每次滚动按当前页方向翻一页。
+- 鼠标工具下放大页面可按住左键拖动，页面边缘不会露出空白；光标会显示抓取状态。
+- 滚轮或左右箭头翻页后恢复适合窗口的比例与居中位置。
+- `python -m unittest discover -s tests` 覆盖上述翻页、缩放和页面拖动行为。
 
 ### v0.0.13 桌面布局自适应修复
 
@@ -29,6 +48,7 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 
 - 普通鼠标滚轮向下进入下一页、向上返回上一页，和当前工具无关。
 - 按住 `Alt` 加鼠标滚轮缩放书页，画笔、荧光笔、橡皮擦和鼠标模式都可使用。
+- 阅读区任意位置（包括插入图片上）都能用滚轮翻页；鼠标工具下放大页面可按住左键拖动，翻页后恢复适合窗口。
 - 键盘 `左箭头` / `右箭头` 翻页。
 
 ### v0.0.10 图片角点拖拽缩放
@@ -98,7 +118,7 @@ python main.py
 
 ```powershell
 python -m pip install -r requirements-build.txt
-.\build_windows.ps1 -Version v0.0.13
+.\build_windows.ps1 -Version v0.1.1
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成固定名称的 `ReadDraw.exe`、`ReadDraw.exe.sha256` 和 `update.json`。每次成功构建后会清理旧的版本号命名产物，避免误上传过期文件。如果希望生成便于分发的文件夹版本：
@@ -110,26 +130,26 @@ Windows 版暂时停用资源管理器拖入功能，避免向 Flet 原生窗口
 桌面包排除了可选的 `pymupdf.layout` / ONNX 布局分析组件，PDF 显示和文字搜索使用 MuPDF。这样可以避免不必要的模型加载和相关本机组件启动崩溃。
 
 ```powershell
-.\build_windows.ps1 -Version v0.0.13 -OneDir
+.\build_windows.ps1 -Version v0.1.1 -OneDir
 ```
 
 ## 远程更新发布
 
-推送 `v0.0.13` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
+推送 `v0.1.1` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
 
 ```powershell
 git add .
-git commit -m "Prepare ReadDraw v0.0.13"
+git commit -m "Prepare ReadDraw v0.1.1"
 git push origin main
-git tag v0.0.13
-git push origin v0.0.13
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 GitHub Actions 文件位于 `.github/workflows/release.yml`。源码运行时只支持检查版本，不会替换 Python 环境。
 
-也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.0.13`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
+也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.1.1`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
 
-如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.0.13`）：
+如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.1.1`）：
 
 - `release/ReadDraw-Setup.exe`：安装包，供首次安装。
 - `release/ReadDraw.exe`：主程序，供免安装运行与自动更新。

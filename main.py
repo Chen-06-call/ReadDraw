@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
+import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +32,7 @@ from readdraw.file_dialogs import ImageFileDialog
 from readdraw.canvas_view import ReadingCanvas
 from readdraw.drawing import (
     MARKER_COLOR, MARKER_OPACITY, MARKER_WIDTH_MULTIPLIER,
-    clone_strokes, compose_page, point_near_stroke,
+    clone_strokes, compose_page, mouse_speed_pressure, normalize_pressure, point_near_stroke,
 )
 from readdraw.models import Book
 from readdraw.reader import open_document, render_page
@@ -76,8 +78,14 @@ class ReadDrawApp:
             on_attachment_delete=self.on_attachment_delete,
             can_drag_attachments=lambda: self.tool == "mouse",
             on_zoom=self.on_canvas_scroll,
+            can_pan_page=lambda: self.tool == "mouse",
+            on_pressure=self.update_stroke_pressure,
         )
         self.erasing = False
+        self.stroke_pressure = 0.65
+        self._device_pressure_active = False
+        self._pressure_pointer: tuple[float, float] | None = None
+        self._pressure_sample_time: float | None = None
         self.directory_picker = ft.FilePicker()
         self.data_path_text = ft.Text(str(config.APP_DIR), size=10, color="#667085", selectable=True)
         self.settings_path_text = ft.Text(str(config.APP_DIR), size=12, color="#667085", selectable=True)
@@ -108,7 +116,7 @@ class ReadDrawApp:
         self.page.update()
 
     def fit_page(self, _=None) -> None:
-        self.drawing_view.layout()
+        self.drawing_view.reset_view()
         self.page.update()
 
     def on_page_error(self, event: Any) -> None:
@@ -398,6 +406,13 @@ class ReadDrawApp:
             "opacity": MARKER_OPACITY if is_marker else 1.0,
             "points": [list(position)],
         }
+        if self.tool == "pen":
+            device_pressure = getattr(event, "pressure", None)
+            self._device_pressure_active = device_pressure is not None
+            self.stroke_pressure = normalize_pressure(device_pressure)
+            self.active_stroke["pressures"] = [self.stroke_pressure]
+            self._pressure_pointer = self._pressure_position(event, position)
+            self._pressure_sample_time = time.perf_counter()
         self.strokes.append(self.active_stroke)
         self.drawing_view.begin(self.active_stroke)
 
@@ -410,8 +425,39 @@ class ReadDrawApp:
         if self.erasing:
             self.erase_at(*position)
         elif self.active_stroke is not None:
+            if "pressures" in self.active_stroke and not self._device_pressure_active:
+                self.stroke_pressure = self._estimate_mouse_pressure(event, position)
             self.active_stroke["points"].append(list(position))
-            self.drawing_view.append(*position)
+            if "pressures" in self.active_stroke:
+                self.active_stroke["pressures"].append(self.stroke_pressure)
+            self.drawing_view.append(
+                *position, pressure=self.stroke_pressure, stroke=self.active_stroke
+            )
+
+    def update_stroke_pressure(self, pressure: float) -> None:
+        """接收真实压感设备的压力事件并更新当前笔迹。"""
+        if self.active_stroke is None or "pressures" not in self.active_stroke:
+            return
+        self._device_pressure_active = True
+        self.stroke_pressure = normalize_pressure(pressure)
+        self.drawing_view.update_active_pressure(self.stroke_pressure)
+
+    def _pressure_position(self, event: Any, fallback: tuple[float, float]) -> tuple[float, float]:
+        """优先使用窗口坐标估算鼠标速度，避免缩放页面影响笔压。"""
+        return self.drawing_view._pointer(event) or fallback
+
+    def _estimate_mouse_pressure(self, event: Any, fallback: tuple[float, float]) -> float:
+        """按鼠标速度估算压力，并平滑线宽变化以减少抖动。"""
+        pointer = self._pressure_position(event, fallback)
+        sample_time = time.perf_counter()
+        if self._pressure_pointer is not None and self._pressure_sample_time is not None:
+            elapsed = max(0.008, min(0.1, sample_time - self._pressure_sample_time))
+            distance = math.dist(pointer, self._pressure_pointer)
+            target = mouse_speed_pressure(distance / elapsed)
+            self.stroke_pressure += (target - self.stroke_pressure) * 0.4
+        self._pressure_pointer = pointer
+        self._pressure_sample_time = sample_time
+        return self.stroke_pressure
 
     def erase_at(self, x: float, y: float) -> None:
         radius = 16 / self.drawing_view.transform.scale
@@ -427,6 +473,9 @@ class ReadDrawApp:
             self.notes_text.value = f"{len(self.strokes)} 条绘画笔迹"
         self.active_stroke = None
         self.erasing = False
+        self._device_pressure_active = False
+        self._pressure_pointer = None
+        self._pressure_sample_time = None
         self.drawing_view.active_path = None
 
     async def end_stroke(self, _event: Any) -> None:
@@ -441,7 +490,10 @@ class ReadDrawApp:
         self.tool = tool
         if tool != "mouse":
             self.drawing_view.clear_attachment_selection()
-        self.drawing_view.detector.mouse_cursor = ft.MouseCursor.BASIC if tool == "mouse" else ft.MouseCursor.PRECISE
+        if tool == "mouse" and self.drawing_view.zoom > 1.0:
+            self.drawing_view.detector.mouse_cursor = ft.MouseCursor.GRAB
+        else:
+            self.drawing_view.detector.mouse_cursor = ft.MouseCursor.BASIC if tool == "mouse" else ft.MouseCursor.PRECISE
         self.mouse_btn.selected = tool == "mouse"
         self.pen_btn.selected = tool == "pen"
         self.marker_btn.selected = tool == "marker"
@@ -506,6 +558,8 @@ class ReadDrawApp:
     def go_page(self, delta: int) -> None:
         if self.document and 0 <= self.page_index + delta < self.document.page_count:
             self.finish_drawing()
+            # 每次翻页都回到适合窗口的默认视图，避免新页面继承旧页的放大和偏移。
+            self.drawing_view.reset_view(relayout=False)
             self.page_index += delta
             self.store.update_page(self.book.id, self.page_index)
             self.load_page()
@@ -517,6 +571,7 @@ class ReadDrawApp:
             target = int(e.control.value) - 1
             if not 0 <= target < self.document.page_count: raise ValueError
             self.finish_drawing()
+            self.drawing_view.reset_view(relayout=False)
             self.page_index = target
             self.store.update_page(self.book.id, target)
             self.load_page()

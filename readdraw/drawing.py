@@ -16,6 +16,32 @@ MARKER_OPACITY = 0.32
 MARKER_WIDTH_MULTIPLIER = 4
 
 
+def normalize_pressure(value: Any, fallback: float = 0.65) -> float:
+    """将设备压感限制在稳定的 0 到 1 范围内。"""
+    try:
+        pressure = float(value)
+    except (TypeError, ValueError):
+        pressure = fallback
+    if not 0.0 <= pressure <= 1.0:
+        pressure = fallback
+    return pressure
+
+
+def pressure_width(base_width: float, pressure: Any) -> float:
+    """将归一化压力换算为笔宽，并保持鼠标笔迹的默认粗细。"""
+    return max(0.5, float(base_width) * (0.35 + normalize_pressure(pressure)))
+
+
+def mouse_speed_pressure(speed: Any, maximum_speed: float = 1800.0) -> float:
+    """将鼠标移动速度反向映射为模拟压力，慢速更粗、快速更细。"""
+    try:
+        pixels_per_second = max(0.0, float(speed))
+        speed_limit = max(1.0, float(maximum_speed))
+    except (TypeError, ValueError):
+        return 0.65
+    return max(0.0, min(1.0, 1.0 - pixels_per_second / speed_limit))
+
+
 def stroke_rgba(stroke: dict[str, Any]) -> tuple[int, int, int, int]:
     """统一导出笔迹颜色，旧版未保存透明度的普通笔迹仍保持不透明。"""
     red, green, blue, alpha = ImageColor.getcolor(stroke.get("color", "#E45756"), "RGBA")
@@ -53,12 +79,23 @@ def compose_page(base_image: PILImage.Image, strokes: list[dict[str, Any]], atta
         points = [(int(point[0]), int(point[1])) for point in stroke.get("points", [])]
         color = stroke_rgba(stroke)
         width = int(stroke.get("width", 4))
-        if len(points) > 1:
-            draw.line(points, fill=color, width=width, joint="curve")
+        pressures = stroke.get("pressures")
+        if len(points) > 1 and pressures and len(pressures) == len(points):
+            for index, ((x1, y1), (x2, y2)) in enumerate(zip(points, points[1:])):
+                pressure = (float(pressures[index]) + float(pressures[index + 1])) / 2
+                segment_width = max(1, round(pressure_width(width, pressure)))
+                draw.line((x1, y1, x2, y2), fill=color, width=segment_width)
+                radius = segment_width // 2
+                for x, y in ((x1, y1), (x2, y2)):
+                    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
         elif points:
-            x, y = points[0]
-            radius = max(1, width // 2)
-            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+            width = round(pressure_width(width, pressures[0])) if pressures else width
+            if len(points) > 1:
+                draw.line(points, fill=color, width=width, joint="curve")
+            else:
+                x, y = points[0]
+                radius = max(1, width // 2)
+                draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
         composite.alpha_composite(layer)
     for attachment in attachments or []:
         try:

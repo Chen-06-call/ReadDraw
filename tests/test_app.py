@@ -179,6 +179,55 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.tool, "marker")
         self.assertEqual(self.app.marker_color, "#12B76A")
 
+    async def test_pen_pressure_updates_the_active_stroke_width(self) -> None:
+        """笔压事件改变当前画笔段宽度，缺少压力事件时仍使用默认粗细。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        transform = self.app.drawing_view.transform
+        def pointer(x, y):
+            return SimpleNamespace(local_x=transform.to_view(x, y)[0],
+                                   local_y=transform.to_view(x, y)[1])
+
+        await self.app.start_stroke(pointer(40, 50))
+        self.session.get_page_patch()
+        self.assertEqual(self.app.active_stroke["pressures"], [0.65])
+        first_width = self.app.drawing_view.active_path.paint.stroke_width
+        self.app.drawing_view.detector.on_force_press_update(
+            SimpleNamespace(pressure=0.95)
+        )
+        await self.app.update_stroke(pointer(140, 50))
+        self.assertEqual(self.app.active_stroke["pressures"], [0.95, 0.95])
+        self.assertGreater(self.app.drawing_view.active_path.paint.stroke_width, first_width)
+        await self.app.end_stroke(None)
+        self.assertEqual(
+            self.app.store.get_strokes(self.app.book.id, self.app.page_index)[0]["pressures"],
+            [0.95, 0.95],
+        )
+
+    async def test_mouse_pen_speed_simulates_pressure(self) -> None:
+        """鼠标慢画线宽较粗、快画较细，压力值会保存在笔迹中。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        transform = self.app.drawing_view.transform
+
+        def pointer(x, y, global_x, global_y):
+            return SimpleNamespace(
+                local_x=transform.to_view(x, y)[0],
+                local_y=transform.to_view(x, y)[1],
+                global_position=SimpleNamespace(x=global_x, y=global_y),
+            )
+
+        with patch("main.time.perf_counter", side_effect=[0.0, 0.05, 0.1]):
+            await self.app.start_stroke(pointer(40, 50, 100, 100))
+            await self.app.update_stroke(pointer(50, 50, 105, 100))
+            slow_pressure = self.app.stroke_pressure
+            await self.app.update_stroke(pointer(60, 50, 205, 100))
+            fast_pressure = self.app.stroke_pressure
+
+        self.assertGreater(slow_pressure, 0.65)
+        self.assertLess(fast_pressure, slow_pressure)
+        self.assertEqual(self.app.active_stroke["pressures"], [0.65, slow_pressure, fast_pressure])
+
     async def test_mouse_mode_does_not_create_strokes_and_alt_scroll_zooms(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.app.set_tool("mouse")
@@ -208,6 +257,44 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.app.on_keyboard_event(SimpleNamespace(key="ArrowLeft", alt=False))
         self.assertEqual(self.app.page_index, 0)
 
+    async def test_page_navigation_resets_zoom_and_pan(self) -> None:
+        """翻页后不继承上一页的放大比例和拖动偏移。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.app.drawing_view.set_zoom(2.0)
+        self.app.drawing_view.pan_offset = (-80.0, -40.0)
+        self.app.drawing_view.layout()
+        self.app.go_page(1)
+        self.assertEqual(self.app.drawing_view.zoom, 1.0)
+        self.assertEqual(self.app.drawing_view.pan_offset, (0.0, 0.0))
+        self.app.go_page(-1)
+        self.assertEqual(self.app.drawing_view.zoom, 1.0)
+
+    async def test_mouse_mode_pans_zoomed_page_without_drawing(self) -> None:
+        """鼠标模式下放大页面可拖动，拖动不会新增笔迹。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.app.set_tool("mouse")
+        canvas = self.app.drawing_view
+        canvas.set_zoom(2.0)
+        start = SimpleNamespace(global_position=SimpleNamespace(x=500.0, y=300.0))
+        update = SimpleNamespace(global_position=SimpleNamespace(x=560.0, y=340.0))
+        canvas._begin_page_pan(start)
+        canvas._update_pointer(update)
+        canvas._end_pointer(update)
+        self.assertNotEqual(canvas.pan_offset, (0.0, 0.0))
+        self.assertEqual(self.app.strokes, [])
+
+    async def test_scroll_over_inserted_image_still_navigates_pages(self) -> None:
+        """插入图片位于鼠标下方时，图片手势也转发阅读区滚轮。"""
+        self.app.import_book(str(self.create_pdf()))
+        source = self.root / "inserted.png"
+        Image.new("RGB", (80, 40), "red").save(source)
+        attachment = self.app.store.add_attachment(self.app.book.id, 0, str(source))
+        self.app.load_page()
+        image_detector = self.app.drawing_view.attachment_detectors[attachment.id]
+        event = SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120))
+        image_detector.on_scroll(event)
+        self.assertEqual(self.app.page_index, 1)
+
     async def test_alt_scroll_zoom_works_outside_mouse_mode(self) -> None:
         """按住 Alt 的滚轮缩放在画笔和荧光笔模式下同样可用。"""
         self.app.import_book(str(self.create_pdf()))
@@ -221,7 +308,8 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
             zoom_after = self.app.drawing_view.zoom
             self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120)))
             self.assertEqual(self.app.page_index, 1)
-            self.assertEqual(self.app.drawing_view.zoom, zoom_after)
+        self.assertEqual(self.app.drawing_view.zoom, 1.0)
+        self.assertNotEqual(zoom_after, self.app.drawing_view.zoom)
 
     async def test_continuous_image_drag_saves_only_on_release(self) -> None:
         """走真实的 Flet 事件解码与控件回调，连续移动后翻页仍保留最终位置。"""
