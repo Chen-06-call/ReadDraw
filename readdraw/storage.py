@@ -48,8 +48,12 @@ class Store:
         # 书页唯一，删除时保留标记；同步旧快照不会让已删除的书签重新出现。
         self.db.execute("""CREATE TABLE IF NOT EXISTS bookmarks (
             book_id TEXT NOT NULL, page INTEGER NOT NULL,
-            deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+            deleted INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
             PRIMARY KEY(book_id, page))""")
+        bookmark_columns = {row[1] for row in self.db.execute("PRAGMA table_info(bookmarks)")}
+        if "note" not in bookmark_columns:
+            self.db.execute("ALTER TABLE bookmarks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
         self.db.commit()
 
     def _migrate_books(self) -> None:
@@ -80,21 +84,48 @@ class Store:
         ).fetchall()
         return [row["page"] for row in rows]
 
-    def toggle_bookmark(self, book_id: str, page: int) -> bool:
-        """切换指定页的书签，返回切换后是否已添加。"""
+    def bookmarks(self, book_id: str) -> list[dict[str, Any]]:
+        """按页码返回有效书签及其备注。"""
+        rows = self.db.execute(
+            "SELECT page,note FROM bookmarks WHERE book_id=? AND deleted=0 ORDER BY page",
+            (book_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_bookmark(self, book_id: str, page: int, note: str = "") -> None:
+        """新增或更新书签及可选备注。"""
+        self._validate_bookmark_page(book_id, page)
+        self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,note,updated_at)
+            VALUES(?,?,0,?,?) ON CONFLICT(book_id,page) DO UPDATE SET
+            deleted=0, note=excluded.note, updated_at=excluded.updated_at""",
+            (book_id, page, note.strip(), datetime.now(timezone.utc).isoformat(timespec="microseconds")))
+        self.db.commit()
+
+    def delete_bookmark(self, book_id: str, page: int) -> bool:
+        """删除书签并保留同步用的删除标记。"""
+        row = self.db.execute(
+            "SELECT deleted,note FROM bookmarks WHERE book_id=? AND page=?", (book_id, page)
+        ).fetchone()
+        if row is None or row["deleted"]:
+            return False
+        self.db.execute("""UPDATE bookmarks SET deleted=1, updated_at=?
+            WHERE book_id=? AND page=?""",
+            (datetime.now(timezone.utc).isoformat(timespec="microseconds"), book_id, page))
+        self.db.commit()
+        return True
+
+    def _validate_bookmark_page(self, book_id: str, page: int) -> None:
         book = self.db.execute("SELECT pages FROM books WHERE id=?", (book_id,)).fetchone()
         if book is None or not 0 <= page < book["pages"]:
             raise ValueError("书签页码超出书籍范围")
-        row = self.db.execute(
-            "SELECT deleted FROM bookmarks WHERE book_id=? AND page=?", (book_id, page)
-        ).fetchone()
-        deleted = int(row is not None and not row["deleted"])
-        self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,updated_at) VALUES(?,?,?,?)
-            ON CONFLICT(book_id,page) DO UPDATE SET
-            deleted=excluded.deleted, updated_at=excluded.updated_at""",
-            (book_id, page, deleted, datetime.now(timezone.utc).isoformat(timespec="microseconds")))
-        self.db.commit()
-        return not bool(deleted)
+
+    def toggle_bookmark(self, book_id: str, page: int, note: str = "") -> bool:
+        """切换指定页的书签，返回切换后是否已添加。"""
+        self._validate_bookmark_page(book_id, page)
+        if self.delete_bookmark(book_id, page):
+            return False
+        self.save_bookmark(book_id, page, note)
+        return True
 
     def get_strokes(self, book_id: str, page: int) -> list[dict[str, Any]]:
         row = self.db.execute("SELECT strokes FROM page_annotations WHERE book_id=? AND page=?", (book_id, page)).fetchone()
@@ -189,11 +220,12 @@ class Store:
             self.db.execute("INSERT OR REPLACE INTO text_annotations VALUES(?,?,?,?,?,?,?,?)", [row[k] for k in ("id", "book_id", "page", "kind", "content", "quote", "color", "created_at")])
         for row in snapshot.get("bookmarks", []):
             # 新版增加的可选字段不影响旧快照；冲突时保留更新时间更晚的操作。
-            self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,updated_at) VALUES(?,?,?,?)
+            self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,note,updated_at) VALUES(?,?,?,?,?)
                 ON CONFLICT(book_id,page) DO UPDATE SET
-                deleted=excluded.deleted, updated_at=excluded.updated_at
+                deleted=excluded.deleted, note=excluded.note, updated_at=excluded.updated_at
                 WHERE excluded.updated_at > bookmarks.updated_at""",
-                [row[key] for key in ("book_id", "page", "deleted", "updated_at")])
+                [row.get(key, "" if key == "note" else 0 if key == "deleted" else None)
+                 for key in ("book_id", "page", "deleted", "note", "updated_at")])
         for row in snapshot.get("attachments", []):
             data = row.get("data_base64", "")
             if data:

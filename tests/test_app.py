@@ -137,26 +137,39 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.app.import_book(str(self.create_pdf()))
         self.session.get_page_patch()
         self.app.bookmark_btn.on_click(None)
+        self.assertTrue(self.app.bookmark_editor.visible)
+        self.app.bookmark_save_btn.on_click(None)
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
         self.assertEqual(self.app.bookmark_btn.tooltip, "删除当前页书签")
         self.assertEqual(self.app.bookmark_count.value, "1")
         self.app.go_page(1)
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
         self.app.bookmark_btn.on_click(None)
-        self.assertEqual([entry.data for entry in self.app.bookmark_list.controls], [0, 1])
+        self.assertTrue(self.app.bookmark_editor.visible)
+        self.app.bookmark_note_checkbox.value = True
+        self.app.toggle_bookmark_note(SimpleNamespace(control=self.app.bookmark_note_checkbox))
+        self.app.bookmark_note_field.value = "待重读"
+        self.app.bookmark_save_btn.on_click(None)
+        self.assertEqual([entry.controls[0].data for entry in self.app.bookmark_list.controls], [0, 1])
+        self.assertEqual(self.app.store.bookmarks(self.app.book.id)[1]["note"], "待重读")
         transform = self.app.drawing_view.transform
         x, y = transform.to_view(30, 40)
         await self.app.start_stroke(SimpleNamespace(local_x=x, local_y=y))
-        self.app.bookmark_list.controls[0].on_click(None)
+        self.app.bookmark_list.controls[0].controls[0].on_click(None)
         self.assertEqual(self.app.page_index, 0)
         self.assertTrue(self.app.store.get_strokes(self.app.book.id, 1))
         self.assertEqual(self.app.store.books()[0].current_page, 0)
         self.app.bookmark_btn.on_click(None)
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
-        self.assertEqual([entry.data for entry in self.app.bookmark_list.controls], [1])
-        self.app.bookmark_list.controls[0].on_click(None)
+        self.assertEqual([entry.controls[0].data for entry in self.app.bookmark_list.controls], [1])
+        self.app.bookmark_list.controls[0].controls[0].on_click(None)
         self.assertEqual(self.app.page_index, 1)
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
+        self.app.bookmark_list.controls[0].controls[1].on_click(None)
+        self.assertEqual(self.app.page_index, 1)
+        self.assertEqual(self.app.store.bookmark_pages(self.app.book.id), [])
+        self.assertEqual([entry.value for entry in self.app.bookmark_list.controls],
+                         ["暂无书签，点击工具栏书签图标添加"])
 
     async def test_selected_tool_uses_elevated_button_style(self) -> None:
         self.assertTrue(self.app.pen_btn.selected)
@@ -176,13 +189,15 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.app.import_book(str(source))
         first_id = self.app.book.id
         self.app.toggle_bookmark()
+        self.app.save_bookmark()
         other = self.root / "other.pdf"
         other.write_bytes(source.read_bytes())
         self.app.import_book(str(other))
         self.assertEqual(self.app.bookmark_count.value, "0")
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
-        with patch.object(self.app.store, "toggle_bookmark", side_effect=sqlite3.OperationalError("磁盘已满")):
+        with patch.object(self.app.store, "save_bookmark", side_effect=sqlite3.OperationalError("磁盘已满")):
             self.app.toggle_bookmark()
+            self.app.save_bookmark()
         self.assertIn("保存书签失败", self.app.status.value)
         self.assertEqual(self.app.bookmark_count.value, "0")
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
@@ -190,9 +205,32 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.bookmark_count.value, "1")
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
 
+    async def test_bookmark_cancel_optional_note_and_delete_other_page(self) -> None:
+        """取消不写入；不勾备注不保存文字；删除其它页书签不会翻页。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.app.notes_panel.visible = False
+        self.app.toggle_bookmark()
+        self.assertTrue(self.app.notes_panel.visible)
+        self.app.bookmark_note_field.value = "取消的备注"
+        self.app.cancel_bookmark()
+        self.assertEqual(self.app.store.bookmarks(self.app.book.id), [])
+        self.app.toggle_bookmark()
+        self.app.bookmark_note_field.value = "未勾选的备注"
+        self.app.save_bookmark()
+        self.assertEqual(self.app.store.bookmarks(self.app.book.id), [{"page": 0, "note": ""}])
+        self.app.go_page(1)
+        with patch.object(self.app.store, "delete_bookmark", side_effect=sqlite3.OperationalError("只读磁盘")):
+            self.app.bookmark_list.controls[0].controls[1].on_click(None)
+        self.assertIn("删除书签失败", self.app.status.value)
+        self.assertEqual(self.app.store.bookmark_pages(self.app.book.id), [0])
+        self.app.bookmark_list.controls[0].controls[1].on_click(None)
+        self.assertEqual(self.app.page_index, 1)
+        self.assertEqual(self.app.store.bookmarks(self.app.book.id), [])
+
     async def test_settings_migrate_open_library_and_preserve_background(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.app.toggle_bookmark()
+        self.app.save_bookmark()
         self.app.open_settings()
         self.assertTrue(self.app.apply_background("#FFFDF7"))
         destination = self.root / "relocated"

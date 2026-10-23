@@ -37,23 +37,32 @@ async def verify(page: ft.Page) -> None:
         app.import_book(str(source))
         await asyncio.sleep(2)
         app.bookmark_btn.on_click(None)
+        app.save_bookmark()
         app.go_to_last_page()
         app.bookmark_btn.on_click(None)
+        app.bookmark_note_checkbox.value = True
+        app.bookmark_note_field.value = "最后一页"
+        app.save_bookmark()
         await asyncio.sleep(1)
         (OUTPUT / "bookmarks.png").write_bytes(await asyncio.wait_for(page.take_screenshot(), 15))
-        assert [entry.data for entry in app.bookmark_list.controls] == [0, 2]
-        app.bookmark_list.controls[0].on_click(None)
+        assert [entry.controls[0].data for entry in app.bookmark_list.controls] == [0, 2]
+        app.bookmark_list.controls[0].controls[0].on_click(None)
         assert app.page_index == 0
         assert app.bookmark_btn.icon == ft.Icons.BOOKMARK
         app.bookmark_btn.on_click(None)
         assert app.store.bookmark_pages(app.book.id) == [2]
-        app.bookmark_list.controls[0].on_click(None)
+        note = app.bookmark_list.controls[0].controls[0].content.controls[1].controls[1]
+        assert note.value == "最后一页"
+        app.bookmark_list.controls[0].controls[0].on_click(None)
         assert app.page_index == 2
+        app.bookmark_list.controls[0].controls[1].on_click(None)
+        assert app.page_index == 2
+        assert app.store.bookmark_pages(app.book.id) == []
         await asyncio.sleep(1)
         (OUTPUT / "after-delete-and-jump.png").write_bytes(
             await asyncio.wait_for(page.take_screenshot(), 15)
         )
-        REPORT.update(success=True, page=app.page_index + 1, bookmarks=[3])
+        REPORT.update(success=True, page=app.page_index + 1, bookmarks=[])
     except Exception as exc:
         REPORT["error"] = repr(exc)
     finally:

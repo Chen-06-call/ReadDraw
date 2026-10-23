@@ -187,6 +187,28 @@ def build_desktop(app):
     # 目录高度固定并独立滚动，避免书签增多后挤占阅读区和文字编辑器。
     app.bookmark_list = ft.ListView(height=130, spacing=3)
     app.bookmark_count = label("0", 11)
+    app.bookmark_note_checkbox = ft.Checkbox(
+        label="添加备注", value=False, on_change=app.toggle_bookmark_note,
+    )
+    app.bookmark_note_field = ft.TextField(
+        label="书签备注（可选）", multiline=True, min_lines=1, max_lines=3,
+        visible=False, dense=True, border_radius=6,
+    )
+    app.bookmark_save_btn = ft.FilledButton(
+        "添加书签", icon=ft.Icons.BOOKMARK_ADD_OUTLINED, on_click=app.save_bookmark,
+    )
+    app.bookmark_editor = ft.Container(
+        visible=False,
+        padding=ft.Padding.all(8), bgcolor="#F5F8F6", border_radius=6,
+        content=ft.Column([
+            app.bookmark_note_checkbox,
+            app.bookmark_note_field,
+            ft.Row([
+                ft.TextButton("取消", on_click=app.cancel_bookmark),
+                app.bookmark_save_btn,
+            ], alignment=ft.MainAxisAlignment.END, spacing=4),
+        ], spacing=4),
+    )
     app.note_quote_field = ft.TextField(
         label="原文或选段（可选）", multiline=True, min_lines=2, max_lines=3,
         border_radius=6,
@@ -216,6 +238,7 @@ def build_desktop(app):
             ft.Divider(height=16, color=LINE),
             ft.Row([label("书签目录", 12, INK, weight=ft.FontWeight.W_600),
                     ft.Container(expand=True), app.bookmark_count]),
+            app.bookmark_editor,
             app.bookmark_list,
             ft.Divider(height=28, color=LINE),
             label("本页批注", 12, INK, weight=ft.FontWeight.W_600), app.notes_text,

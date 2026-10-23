@@ -120,14 +120,18 @@ class ReadDrawApp:
 
     def refresh_bookmarks(self) -> None:
         """同步当前页图标与本书目录；构建和翻页时统一调用。"""
-        pages = self.store.bookmark_pages(self.book.id) if self.book else []
-        marked = self.book is not None and self.page_index in pages
+        bookmarks = self.store.bookmarks(self.book.id) if self.book else []
+        marked = self.book is not None and self.page_index in {
+            bookmark["page"] for bookmark in bookmarks
+        }
         self.bookmark_btn.disabled = self.book is None or self.document is None
         self.bookmark_btn.icon = ft.Icons.BOOKMARK if marked else ft.Icons.BOOKMARK_BORDER
         self.bookmark_btn.icon_color = "#217567" if marked else "#233C3A"
         self.bookmark_btn.tooltip = "删除当前页书签" if marked else "添加当前页书签"
-        self.bookmark_count.value = str(len(pages))
-        self.bookmark_list.controls = bookmark_entries(pages, self.page_index, self.navigate_to_page)
+        self.bookmark_count.value = str(len(bookmarks))
+        self.bookmark_list.controls = bookmark_entries(
+            bookmarks, self.page_index, self.navigate_to_page, self.delete_bookmark
+        )
 
     def show_workspace(self, workspace: str) -> None:
         """切换阅读和绘画入口；阅读状态仍由同一工作区实例保存。"""
@@ -153,16 +157,59 @@ class ReadDrawApp:
         self.reading_actions.update()
 
     def toggle_bookmark(self, _=None) -> None:
-        """点击图标添加或删除当前页书签，仅刷新目录和状态。"""
+        """已有书签时删除；新建时展开可选备注编辑区。"""
+        if not self.book or not self.document:
+            return
+        if self.page_index in self.store.bookmark_pages(self.book.id):
+            self.delete_bookmark(self.page_index)
+            return
+        self.bookmark_note_checkbox.value = False
+        self.bookmark_note_field.value = ""
+        self.bookmark_note_field.visible = False
+        self.bookmark_editor.visible = True
+        # 笔记侧栏可能被用户收起，创建入口必须让备注编辑区可见。
+        self.notes_panel.visible = True
+        self.notes_panel.update()
+
+    def toggle_bookmark_note(self, event: Any) -> None:
+        """仅在用户选择添加备注时显示输入框。"""
+        self.bookmark_note_field.visible = bool(event.control.value)
+        self.bookmark_note_field.update()
+
+    def save_bookmark(self, _=None) -> None:
+        """保存当前页书签及可选备注。"""
         if not self.book or not self.document:
             return
         try:
-            added = self.store.toggle_bookmark(self.book.id, self.page_index)
+            note = (self.bookmark_note_field.value or "") if self.bookmark_note_checkbox.value else ""
+            self.store.save_bookmark(self.book.id, self.page_index, note)
         except (OSError, ValueError, sqlite3.Error) as exc:
             self.show_error(f"保存书签失败：{exc}")
             return
+        self.bookmark_editor.visible = False
         self.refresh_bookmarks()
-        self.status.value = f"已{'添加' if added else '删除'}第 {self.page_index + 1} 页书签"
+        self.status.value = f"已添加第 {self.page_index + 1} 页书签"
+        for control in (self.bookmark_editor, self.bookmark_btn, self.bookmark_list,
+                        self.bookmark_count, self.status):
+            control.update()
+
+    def cancel_bookmark(self, _=None) -> None:
+        """关闭编辑区且不改变已有书签。"""
+        self.bookmark_editor.visible = False
+        self.bookmark_editor.update()
+
+    def delete_bookmark(self, page: int) -> None:
+        """从书签目录删除指定页书签，不触发跳页。"""
+        if not self.book:
+            return
+        try:
+            if not self.store.delete_bookmark(self.book.id, page):
+                return
+        except (OSError, sqlite3.Error) as exc:
+            self.show_error(f"删除书签失败：{exc}")
+            return
+        self.refresh_bookmarks()
+        self.status.value = f"已删除第 {page + 1} 页书签"
         for control in (self.bookmark_btn, self.bookmark_list, self.bookmark_count, self.status):
             control.update()
 
@@ -407,6 +454,8 @@ class ReadDrawApp:
 
     def open_book(self, book: Book) -> None:
         try:
+            if self.bookmark_editor.visible:
+                self.cancel_bookmark()
             self.finish_drawing()
             if self.document: self.document.close()
             self.document = open_document(book.path)
@@ -457,6 +506,7 @@ class ReadDrawApp:
             self.bookmark_btn,
             self.bookmark_list,
             self.bookmark_count,
+            self.bookmark_editor,
             self.first_btn,
             self.prev_btn,
             self.next_btn,
@@ -701,6 +751,8 @@ class ReadDrawApp:
             return
         if target == self.page_index:
             return
+        if self.bookmark_editor.visible:
+            self.cancel_bookmark()
         direction = 1 if target > self.page_index else -1
         self.finish_drawing()
         # 每次翻页都回到适合窗口的默认视图，避免新页面继承旧页的放大和偏移。
