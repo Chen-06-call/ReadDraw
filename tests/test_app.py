@@ -214,8 +214,8 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.app.page, "show_dialog") as show_dialog:
             self.app.open_shape_picker()
             dialog = show_dialog.call_args.args[0]
-            self.assertEqual(len(dialog.content.controls), 7)
-            self.app.shape_type = "rectangle"
+            self.assertEqual(len(dialog.content.controls), 8)
+            self.app.shape_type = "triangle"
             self.app.set_tool("shape")
 
         transform = self.app.drawing_view.transform
@@ -223,16 +223,15 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(local_x=transform.to_view(x, y)[0],
                                    local_y=transform.to_view(x, y)[1])
 
-        await self.app.start_stroke(pointer(30, 40))
-        await self.app.update_stroke(pointer(130, 140))
-        self.assertAlmostEqual(self.app.active_stroke["points"][0][0], 30)
-        self.assertAlmostEqual(self.app.active_stroke["points"][0][1], 40)
-        self.assertAlmostEqual(self.app.active_stroke["points"][-1][0], 30)
-        self.assertAlmostEqual(self.app.active_stroke["points"][-1][1], 40)
+        await self.app.start_stroke(pointer(130, 140))
+        await self.app.update_stroke(pointer(100, 120))
+        await self.app.update_stroke(pointer(30, 40))
+        self.assertAlmostEqual(self.app.active_stroke["shape_start"][0], 130)
+        self.assertAlmostEqual(self.app.active_stroke["shape_start"][1], 140)
         self.assertGreater(len(self.app.drawing_view._stroke_shapes(self.app.active_stroke)), 0)
         await self.app.end_stroke(None)
 
-        self.assertEqual(self.app.store.get_strokes(self.app.book.id, 0)[0]["shape"], "rectangle")
+        self.assertEqual(self.app.store.get_strokes(self.app.book.id, 0)[0]["shape"], "triangle")
         self.app.undo()
         self.assertEqual(self.app.strokes, [])
 

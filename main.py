@@ -440,6 +440,7 @@ class ReadDrawApp:
         }
         if is_shape:
             self.active_stroke["shape"] = self.shape_type
+            self.active_stroke["shape_start"] = list(position)
             self.active_stroke["points"] = [list(position), list(position)]
             self.strokes.append(self.active_stroke)
             self.drawing_view.begin(self.active_stroke)
@@ -464,7 +465,7 @@ class ReadDrawApp:
             self.erase_at(*position)
         elif self.active_stroke is not None:
             if self.active_stroke.get("shape"):
-                start = tuple(self.active_stroke["points"][0])
+                start = tuple(self.active_stroke["shape_start"])
                 self.active_stroke["points"] = shape_points(
                     self.active_stroke["shape"], start, position
                 )

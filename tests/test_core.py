@@ -40,6 +40,27 @@ class CoreServiceTests(unittest.TestCase):
         arrow = shape_points("arrow", start, end)
         self.assertEqual(arrow[1], arrow[3])
 
+    def test_circle_and_square_keep_equal_dimensions_in_every_drag_direction(self) -> None:
+        for start, end in (((10, 20), (70, 80)), ((70, 80), (10, 20)),
+                           ((70, 20), (10, 80)), ((10, 80), (70, 20))):
+            circle = shape_points("circle", start, end)
+            square = shape_points("square", start, end)
+            circle_width = max(point[0] for point in circle) - min(point[0] for point in circle)
+            circle_height = max(point[1] for point in circle) - min(point[1] for point in circle)
+            square_width = max(point[0] for point in square) - min(point[0] for point in square)
+            square_height = max(point[1] for point in square) - min(point[1] for point in square)
+            self.assertAlmostEqual(circle_width, circle_height, places=6)
+            self.assertAlmostEqual(square_width, square_height, places=6)
+
+    def test_shape_geometry_remains_anchored_to_original_pointer(self) -> None:
+        start = (80.0, 90.0)
+        first_preview = shape_points("triangle", start, (150.0, 140.0))
+        second_preview = shape_points("triangle", start, (210.0, 180.0))
+        self.assertEqual(min(point[0] for point in first_preview), start[0])
+        self.assertEqual(min(point[0] for point in second_preview), start[0])
+        self.assertEqual(min(point[1] for point in first_preview), start[1])
+        self.assertEqual(min(point[1] for point in second_preview), start[1])
+
     def test_mouse_speed_maps_to_simulated_pressure(self) -> None:
         """鼠标移动越慢模拟压力越大，速度上限处压力归零。"""
         self.assertGreater(mouse_speed_pressure(200), mouse_speed_pressure(1200))

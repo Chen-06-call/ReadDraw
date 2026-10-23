@@ -20,6 +20,7 @@ SHAPE_TYPES = {
     "wave": "波浪线",
     "circle": "圆形",
     "rectangle": "方框",
+    "square": "正方形",
     "arrow": "箭头",
     "triangle": "三角形",
     "diamond": "菱形",
@@ -34,11 +35,16 @@ def shape_points(shape: str, start: tuple[float, float],
     if shape == "line":
         return [[x1, y1], [x2, y2]]
 
+    if shape in {"circle", "square"}:
+        side = max(abs(x2 - x1), abs(y2 - y1))
+        x2 = x1 + (side if x2 >= x1 else -side)
+        y2 = y1 + (side if y2 >= y1 else -side)
+
     left, right = sorted((x1, x2))
     top, bottom = sorted((y1, y2))
     width, height = right - left, bottom - top
-    if shape in {"rectangle", "triangle", "diamond"}:
-        if shape == "rectangle":
+    if shape in {"rectangle", "square", "triangle", "diamond"}:
+        if shape in {"rectangle", "square"}:
             points = [(left, top), (right, top), (right, bottom), (left, bottom)]
         elif shape == "triangle":
             points = [((left + right) / 2, top), (right, bottom), (left, bottom)]
