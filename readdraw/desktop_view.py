@@ -8,6 +8,7 @@ import flet as ft
 
 from .version import APP_TAG
 from .drawing import SHAPE_TYPES
+from .animation import page_slide_offset
 
 ACCENT = "#217567"
 INK = "#233C3A"
@@ -160,12 +161,8 @@ def build_desktop(app):
             ft.VerticalDivider(width=16, color=LINE),
             ft.Column([app.book_title, app.book_subtitle], spacing=3, expand=True,
                       alignment=ft.MainAxisAlignment.CENTER),
-            icon_button(ft.Icons.SPACE_DASHBOARD_OUTLINED, "显示 / 隐藏书库", app.toggle_library),
-            icon_button(ft.Icons.VIEW_SIDEBAR_OUTLINED, "显示 / 隐藏笔记", app.toggle_notes),
             icon_button(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, "检查更新", app.check_updates),
             icon_button(ft.Icons.SETTINGS_OUTLINED, "设置", app.open_settings),
-            ft.FilledButton("打开文件", icon=ft.Icons.FOLDER_OPEN_OUTLINED,
-                            height=38, on_click=app.open_picker),
         ], spacing=10),
     )
 
@@ -246,9 +243,53 @@ def build_desktop(app):
                          height=30, padding=ft.Padding.symmetric(horizontal=16), bgcolor=PAPER),
         ], expand=True, spacing=0),
     )
+    app.reader_workspace = ft.Row(
+        [app.library_panel, center, app.notes_panel], expand=True, spacing=0
+    )
+    app.drawing_workspace = ft.Container(expand=True, bgcolor="#F5F7F6")
+    app.reading_nav = ft.FilledButton(
+        "阅读", icon=ft.Icons.AUTO_STORIES_OUTLINED,
+        on_click=lambda event: app.show_workspace("reading"),
+        style=ft.ButtonStyle(
+            bgcolor={ft.ControlState.DEFAULT: ACCENT},
+            color={ft.ControlState.DEFAULT: "#FFFFFF"},
+            elevation={ft.ControlState.DEFAULT: 2},
+        ),
+    )
+    app.drawing_nav = ft.OutlinedButton(
+        "绘画", icon=ft.Icons.DRAW_OUTLINED,
+        on_click=lambda event: app.show_workspace("drawing"),
+    )
+    app.reading_actions = ft.Row([
+        icon_button(ft.Icons.SPACE_DASHBOARD_OUTLINED, "显示 / 隐藏书库", app.toggle_library),
+        icon_button(ft.Icons.VIEW_SIDEBAR_OUTLINED, "显示 / 隐藏笔记", app.toggle_notes),
+        ft.FilledButton("打开文件", icon=ft.Icons.FOLDER_OPEN_OUTLINED,
+                        height=36, on_click=app.open_picker),
+    ], spacing=8)
+    app.workspace_nav = ft.Container(
+        content=ft.Row([
+            app.reading_nav,
+            app.drawing_nav,
+            ft.Container(expand=True),
+            app.reading_actions,
+        ], spacing=8),
+        height=54, padding=ft.Padding.symmetric(horizontal=22, vertical=7),
+        bgcolor=PAPER,
+        border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
+    )
+    app.workspace_switcher = ft.AnimatedSwitcher(
+        content=app.reader_workspace,
+        duration=220,
+        reverse_duration=180,
+        switch_in_curve=ft.AnimationCurve.EASE_OUT_CUBIC,
+        switch_out_curve=ft.AnimationCurve.EASE_IN_CUBIC,
+        transition=ft.AnimatedSwitcherTransition.FADE,
+        expand=True,
+    )
+    # 阅读页以方向偏移进入，隐式动画由画布容器处理，不替换手势监听控件。
+    app.canvas_host.animate_offset = page_slide_offset()
     root = ft.Column(
-        [app.header, ft.Row([app.library_panel, center, app.notes_panel], expand=True, spacing=0)],
-        expand=True, spacing=0,
+        [app.header, app.workspace_nav, app.workspace_switcher], expand=True, spacing=0
     )
     # 页面级键盘事件已负责快捷键，根布局直接挂载，避免监听控件改变布局约束。
     page.add(root)

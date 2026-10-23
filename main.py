@@ -41,6 +41,7 @@ from readdraw.reader import open_document, render_page
 from readdraw.settings_view import create_settings_dialog
 from readdraw.desktop_view import build_desktop
 from readdraw.bookmark_view import bookmark_entries
+from readdraw.animation import page_slide_offset
 from readdraw.keyboard_state import is_alt_pressed, is_control_pressed
 from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
@@ -94,6 +95,7 @@ class ReadDrawApp:
         self._device_pressure_active = False
         self._pressure_pointer: tuple[float, float] | None = None
         self._pressure_sample_time: float | None = None
+        self.workspace = "reading"
         self.directory_picker = ft.FilePicker()
         self.data_path_text = ft.Text(str(config.APP_DIR), size=10, color="#667085", selectable=True)
         self.settings_path_text = ft.Text(str(config.APP_DIR), size=12, color="#667085", selectable=True)
@@ -126,6 +128,29 @@ class ReadDrawApp:
         self.bookmark_btn.tooltip = "删除当前页书签" if marked else "添加当前页书签"
         self.bookmark_count.value = str(len(pages))
         self.bookmark_list.controls = bookmark_entries(pages, self.page_index, self.navigate_to_page)
+
+    def show_workspace(self, workspace: str) -> None:
+        """切换阅读和绘画入口；阅读状态仍由同一工作区实例保存。"""
+        if workspace not in {"reading", "drawing"} or workspace == self.workspace:
+            return
+        self.workspace = workspace
+        content = self.reader_workspace if workspace == "reading" else self.drawing_workspace
+        self.workspace_switcher.content = content
+        self.reading_nav.style = ft.ButtonStyle(
+            bgcolor={ft.ControlState.DEFAULT: "#217567" if workspace == "reading" else "#FFFFFF"},
+            color={ft.ControlState.DEFAULT: "#FFFFFF" if workspace == "reading" else "#233C3A"},
+            elevation={ft.ControlState.DEFAULT: 2 if workspace == "reading" else 0},
+        )
+        self.drawing_nav.style = ft.ButtonStyle(
+            bgcolor={ft.ControlState.DEFAULT: "#217567" if workspace == "drawing" else "#FFFFFF"},
+            color={ft.ControlState.DEFAULT: "#FFFFFF" if workspace == "drawing" else "#233C3A"},
+            elevation={ft.ControlState.DEFAULT: 2 if workspace == "drawing" else 0},
+        )
+        self.reading_actions.visible = workspace == "reading"
+        self.workspace_switcher.update()
+        self.reading_nav.update()
+        self.drawing_nav.update()
+        self.reading_actions.update()
 
     def toggle_bookmark(self, _=None) -> None:
         """点击图标添加或删除当前页书签，仅刷新目录和状态。"""
@@ -423,6 +448,7 @@ class ReadDrawApp:
         """翻页时仅更新阅读区和相关控件，保留滚轮监听器的挂载状态。"""
         for control in (
             self.reader_scroll_detector,
+            self.canvas_host,
             self.page_input,
             self.page_label,
             self.progress_text,
@@ -675,15 +701,27 @@ class ReadDrawApp:
             return
         if target == self.page_index:
             return
+        direction = 1 if target > self.page_index else -1
         self.finish_drawing()
         # 每次翻页都回到适合窗口的默认视图，避免新页面继承旧页的放大和偏移。
         self.drawing_view.reset_view(relayout=False)
+        self.canvas_host.offset = (direction * 0.08, 0)
         self.page_index = target
         self.store.update_page(self.book.id, self.page_index)
         # 避免整页刷新替换阅读区监听器，解决缩放后滚轮事件需要重新点按的问题。
         self.load_page(update_page=False)
         self.refresh_library()
         self.update_reader_controls()
+        self.page.run_task(self._finish_page_transition)
+
+    async def _finish_page_transition(self) -> None:
+        """短暂保留起始偏移，让新页面从对应方向平滑滑入。"""
+        await asyncio.sleep(0.016)
+        self.canvas_host.offset = (0, 0)
+        try:
+            self.canvas_host.update()
+        except RuntimeError:
+            pass
 
     def jump_page(self, e: Any) -> None:
         if not self.document: return
