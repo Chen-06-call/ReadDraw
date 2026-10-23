@@ -13,6 +13,7 @@ from PIL import Image
 
 from readdraw.drawing import (
     compose_page, mouse_speed_pressure, point_near_stroke, pressure_width,
+    shape_points,
 )
 from readdraw.pdf import open_pdf, render_page
 from readdraw.epub import EpubDocument
@@ -28,6 +29,17 @@ from readdraw.data_location import migrate_data_dir
 
 
 class CoreServiceTests(unittest.TestCase):
+    def test_shape_points_cover_common_geometry(self) -> None:
+        start, end = (10.0, 20.0), (110.0, 80.0)
+        self.assertEqual(shape_points("line", start, end), [[10.0, 20.0], [110.0, 80.0]])
+        for shape in ("rectangle", "triangle", "diamond"):
+            points = shape_points(shape, start, end)
+            self.assertEqual(points[0], points[-1])
+        self.assertEqual(len(shape_points("circle", start, end)), 49)
+        self.assertEqual(len(shape_points("wave", start, end)), 49)
+        arrow = shape_points("arrow", start, end)
+        self.assertEqual(arrow[1], arrow[3])
+
     def test_mouse_speed_maps_to_simulated_pressure(self) -> None:
         """鼠标移动越慢模拟压力越大，速度上限处压力归零。"""
         self.assertGreater(mouse_speed_pressure(200), mouse_speed_pressure(1200))

@@ -208,6 +208,34 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.tool, "marker")
         self.assertEqual(self.app.marker_color, "#12B76A")
 
+    async def test_shape_picker_draws_live_shape_and_saves_for_undo(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        with patch.object(self.app.page, "show_dialog") as show_dialog:
+            self.app.open_shape_picker()
+            dialog = show_dialog.call_args.args[0]
+            self.assertEqual(len(dialog.content.controls), 7)
+            self.app.shape_type = "rectangle"
+            self.app.set_tool("shape")
+
+        transform = self.app.drawing_view.transform
+        def pointer(x, y):
+            return SimpleNamespace(local_x=transform.to_view(x, y)[0],
+                                   local_y=transform.to_view(x, y)[1])
+
+        await self.app.start_stroke(pointer(30, 40))
+        await self.app.update_stroke(pointer(130, 140))
+        self.assertAlmostEqual(self.app.active_stroke["points"][0][0], 30)
+        self.assertAlmostEqual(self.app.active_stroke["points"][0][1], 40)
+        self.assertAlmostEqual(self.app.active_stroke["points"][-1][0], 30)
+        self.assertAlmostEqual(self.app.active_stroke["points"][-1][1], 40)
+        self.assertGreater(len(self.app.drawing_view._stroke_shapes(self.app.active_stroke)), 0)
+        await self.app.end_stroke(None)
+
+        self.assertEqual(self.app.store.get_strokes(self.app.book.id, 0)[0]["shape"], "rectangle")
+        self.app.undo()
+        self.assertEqual(self.app.strokes, [])
+
     async def test_clear_page_strokes_saves_and_can_be_undone(self) -> None:
         """一键清空本页笔迹但不影响文字批注，并可用撤销恢复。"""
         self.app.import_book(str(self.create_pdf()))

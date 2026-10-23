@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import io
+import math
 from typing import Any
 
 from PIL import Image as PILImage
@@ -14,6 +15,68 @@ from PIL import ImageColor
 MARKER_COLOR = "#FFEB3B"
 MARKER_OPACITY = 0.32
 MARKER_WIDTH_MULTIPLIER = 4
+SHAPE_TYPES = {
+    "line": "直线",
+    "wave": "波浪线",
+    "circle": "圆形",
+    "rectangle": "方框",
+    "arrow": "箭头",
+    "triangle": "三角形",
+    "diamond": "菱形",
+}
+
+
+def shape_points(shape: str, start: tuple[float, float],
+                 end: tuple[float, float]) -> list[list[float]]:
+    """根据拖动边界生成可保存、可预览和可导出的形状点序列。"""
+    x1, y1 = start
+    x2, y2 = end
+    if shape == "line":
+        return [[x1, y1], [x2, y2]]
+
+    left, right = sorted((x1, x2))
+    top, bottom = sorted((y1, y2))
+    width, height = right - left, bottom - top
+    if shape in {"rectangle", "triangle", "diamond"}:
+        if shape == "rectangle":
+            points = [(left, top), (right, top), (right, bottom), (left, bottom)]
+        elif shape == "triangle":
+            points = [((left + right) / 2, top), (right, bottom), (left, bottom)]
+        else:
+            points = [((left + right) / 2, top), (right, (top + bottom) / 2),
+                      ((left + right) / 2, bottom), (left, (top + bottom) / 2)]
+        points.append(points[0])
+        return [[x, y] for x, y in points]
+
+    if shape == "circle":
+        return [[(left + right) / 2 + width / 2 * math.cos(index * math.tau / 48),
+                 (top + bottom) / 2 + height / 2 * math.sin(index * math.tau / 48)]
+                for index in range(49)]
+
+    if shape == "arrow":
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length < 1:
+            return [[x1, y1], [x2, y2]]
+        head_length = min(22.0, length * 0.35)
+        angle = math.atan2(y2 - y1, x2 - x1)
+        left_head = (x2 - head_length * math.cos(angle - math.pi / 6),
+                     y2 - head_length * math.sin(angle - math.pi / 6))
+        right_head = (x2 - head_length * math.cos(angle + math.pi / 6),
+                      y2 - head_length * math.sin(angle + math.pi / 6))
+        return [[x1, y1], [x2, y2], [left_head[0], left_head[1]],
+                [x2, y2], [right_head[0], right_head[1]]]
+
+    if shape == "wave":
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length < 1:
+            return [[x1, y1], [x2, y2]]
+        normal_x, normal_y = -(y2 - y1) / length, (x2 - x1) / length
+        amplitude = min(8.0, length / 12)
+        return [[x1 + (x2 - x1) * t + normal_x * amplitude * math.sin(t * math.tau * 6),
+                 y1 + (y2 - y1) * t + normal_y * amplitude * math.sin(t * math.tau * 6)]
+                for t in (index / 48 for index in range(49))]
+
+    return [[x1, y1], [x2, y2]]
 
 
 def normalize_pressure(value: Any, fallback: float = 0.65) -> float:

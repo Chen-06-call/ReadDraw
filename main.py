@@ -32,7 +32,8 @@ from readdraw.file_dialogs import ImageFileDialog
 from readdraw.canvas_view import ReadingCanvas
 from readdraw.drawing import (
     MARKER_COLOR, MARKER_OPACITY, MARKER_WIDTH_MULTIPLIER,
-    clone_strokes, compose_page, mouse_speed_pressure, normalize_pressure, point_near_stroke,
+    SHAPE_TYPES, clone_strokes, compose_page, mouse_speed_pressure,
+    normalize_pressure, point_near_stroke, shape_points,
 )
 from readdraw.models import Book
 from readdraw.reader import open_document, render_page
@@ -61,6 +62,7 @@ class ReadDrawApp:
         self.attachments = []
         self.active_stroke: dict[str, Any] | None = None
         self.tool = "pen"
+        self.shape_type = "line"
         self.color = "#E45756"
         self.marker_color = MARKER_COLOR
         self.thickness = 4
@@ -428,6 +430,7 @@ class ReadDrawApp:
             self.erase_at(*position)
             return
         is_marker = self.tool == "marker"
+        is_shape = self.tool == "shape"
         self.active_stroke = {
             "tool": self.tool,
             "color": self.marker_color if is_marker else self.color,
@@ -435,6 +438,12 @@ class ReadDrawApp:
             "opacity": MARKER_OPACITY if is_marker else 1.0,
             "points": [list(position)],
         }
+        if is_shape:
+            self.active_stroke["shape"] = self.shape_type
+            self.active_stroke["points"] = [list(position), list(position)]
+            self.strokes.append(self.active_stroke)
+            self.drawing_view.begin(self.active_stroke)
+            return
         if self.tool == "pen":
             device_pressure = getattr(event, "pressure", None)
             self._device_pressure_active = device_pressure is not None
@@ -454,6 +463,14 @@ class ReadDrawApp:
         if self.erasing:
             self.erase_at(*position)
         elif self.active_stroke is not None:
+            if self.active_stroke.get("shape"):
+                start = tuple(self.active_stroke["points"][0])
+                self.active_stroke["points"] = shape_points(
+                    self.active_stroke["shape"], start, position
+                )
+                self.drawing_view.set_strokes(self.strokes)
+                self.drawing_view.ink.update()
+                return
             if "pressures" in self.active_stroke and not self._device_pressure_active:
                 self.stroke_pressure = self._estimate_mouse_pressure(event, position)
             self.active_stroke["points"].append(list(position))
@@ -512,7 +529,7 @@ class ReadDrawApp:
         self.notes_text.update()
 
     def set_tool(self, tool: str) -> None:
-        if tool not in ("mouse", "pen", "marker", "eraser"):
+        if tool not in ("mouse", "pen", "marker", "eraser", "shape"):
             return
         # 切换工具前提交笔迹，避免荧光笔与普通画笔共用尚未结束的手势。
         self.finish_drawing()
@@ -527,14 +544,40 @@ class ReadDrawApp:
         self.pen_btn.selected = tool == "pen"
         self.marker_btn.selected = tool == "marker"
         self.eraser_btn.selected = tool == "eraser"
+        self.shape_btn.selected = tool == "shape"
         self.thickness_slider.tooltip = "荧光笔粗细（普通画笔的 4 倍）" if tool == "marker" else "画笔粗细"
         self.status.value = {
             "mouse": "鼠标模式：可拖动图片，按住 Alt + 滚轮缩放",
             "marker": "荧光笔：按住鼠标在书页上涂画",
             "eraser": "橡皮擦",
             "pen": "画笔",
+            "shape": f"形状：{SHAPE_TYPES[self.shape_type]}，按住鼠标拖动绘制",
         }[tool]
         self.page.update()
+
+    def open_shape_picker(self, _=None) -> None:
+        """显示常用形状选择框，并将选中形状切换为当前绘制工具。"""
+        choices = [
+            ft.TextButton(
+                name,
+                icon=ft.Icons.CHECK if shape == self.shape_type else None,
+                on_click=lambda event, selected=shape: self.select_shape(selected),
+            )
+            for shape, name in SHAPE_TYPES.items()
+        ]
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("选择形状"),
+            content=ft.Column(choices, tight=True, spacing=2),
+            actions=[ft.TextButton("取消", on_click=lambda event: self.page.pop_dialog())],
+        ))
+
+    def select_shape(self, shape: str) -> None:
+        if shape not in SHAPE_TYPES:
+            return
+        self.shape_type = shape
+        self.page.pop_dialog()
+        self.set_tool("shape")
 
     def on_attachment_move(self, _attachment: Any) -> None:
         """拖动过程中只更新图片控件，避免每一帧重绘书页。"""
@@ -579,7 +622,12 @@ class ReadDrawApp:
             self.marker_color = color
         else:
             self.color = color
-        self.set_tool("marker" if self.tool == "marker" else "pen")
+        if self.tool == "marker":
+            self.set_tool("marker")
+        elif self.tool == "shape":
+            self.set_tool("shape")
+        else:
+            self.set_tool("pen")
 
     def change_thickness(self, e: Any) -> None:
         self.thickness = int(e.control.value)

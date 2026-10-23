@@ -69,6 +69,7 @@ def build_toolbar(app):
     app.mouse_btn = tool_button(ft.Icons.PAN_TOOL_OUTLINED, "鼠标", lambda e: app.set_tool("mouse"))
     app.eraser_btn = tool_button(ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_tool("eraser"))
     app.marker_btn = tool_button(ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_tool("marker"))
+    app.shape_btn = tool_button(ft.Icons.FORMAT_SHAPES_OUTLINED, "选择形状", app.open_shape_picker)
     app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", app.open_text_dialog)
     app.image_btn = icon_button(ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED, "插入图片", app.open_image_picker)
     app.sync_btn = icon_button(ft.Icons.LAN_OUTLINED, "局域网同步", app.toggle_sync)
@@ -78,7 +79,8 @@ def build_toolbar(app):
     app.thickness_slider = ft.Slider(min=2, max=16, divisions=7, value=4, width=94,
         active_color=ACCENT, on_change=app.change_thickness, tooltip="画笔粗细")
     tools = ft.Row([
-        app.mouse_btn, app.pen_btn, app.eraser_btn, app.marker_btn, app.note_btn, app.image_btn,
+        app.mouse_btn, app.pen_btn, app.eraser_btn, app.marker_btn, app.shape_btn,
+        app.note_btn, app.image_btn,
         ft.VerticalDivider(width=12, color=LINE),
         ft.Row([app.color_button(c) for c in ("#FFEB3B", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")], spacing=3),
         app.thickness_slider,
