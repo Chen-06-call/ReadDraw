@@ -245,6 +245,78 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.store.bookmark_pages(self.app.book.id), [0])
         self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
 
+    async def test_page_animation_settings_persist_and_switch_effect(self) -> None:
+        self.assertTrue(self.app.page_animation_enabled)
+        self.assertEqual(self.app.page_animation_type, "slide")
+        self.assertTrue(self.app.apply_page_animation(True, "fade"))
+        self.assertEqual(config.get_setting("page_animation_type"), "fade")
+        self.assertIsNotNone(self.app.canvas_host.animate_opacity)
+        self.assertIsNone(self.app.canvas_host.animate_offset)
+
+        self.assertTrue(self.app.apply_page_animation(False, "fade"))
+        self.assertFalse(self.app.page_animation_enabled)
+        self.assertIsNone(self.app.canvas_host.animate_opacity)
+        self.assertIsNone(self.app.canvas_host.animate_offset)
+        self.assertEqual(self.app.canvas_host.opacity, 1)
+
+    async def test_disabled_page_animation_keeps_navigation_working(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        self.assertTrue(self.app.apply_page_animation(False, "slide"))
+        self.app.go_page(1)
+        self.assertEqual(self.app.page_index, 1)
+        self.assertIsNone(self.app.canvas_host.animate_offset)
+        self.assertEqual(self.app.canvas_host.offset, (0, 0))
+
+    async def test_animation_settings_controls_and_failed_save(self) -> None:
+        """通过真实设置控件切换选项，保存失败时还原最近一次成功的值。"""
+        self.app.open_settings()
+        # 录制连接没有原生客户端，显式提交控件树后再模拟用户事件。
+        self.session.get_page_patch()
+        dialog = self.app.page._dialogs.controls[-1]
+        switch = dialog.content.controls[2]
+        selector = dialog.content.controls[3]
+        self.assertIsInstance(switch, ft.Switch)
+        selector.value = "scale"
+        selector.on_select(SimpleNamespace(control=selector))
+        self.session.get_page_patch()
+        self.assertEqual(self.app.page_animation_type, "scale")
+        self.assertEqual(config.get_setting("page_animation_type"), "scale")
+        switch.value = False
+        switch.on_change(SimpleNamespace(control=switch))
+        self.session.get_page_patch()
+        self.assertTrue(selector.disabled)
+        self.assertFalse(config.get_setting("page_animation_enabled"))
+        switch.value = True
+        switch.on_change(SimpleNamespace(control=switch))
+        self.assertFalse(selector.disabled)
+        with patch("main.config.save_settings", side_effect=OSError("只读目录")):
+            selector.value = "fade"
+            selector.on_select(SimpleNamespace(control=selector))
+        self.assertEqual(selector.value, "scale")
+        self.assertEqual(self.app.page_animation_type, "scale")
+
+    async def test_page_transitions_finish_and_ignore_outdated_tasks(self) -> None:
+        """每种动画最终归位，快速翻页时旧任务不能提前结束新动画。"""
+        self.app.import_book(str(self.create_pdf()))
+        for kind in ("slide", "fade", "scale"):
+            self.app.apply_page_animation(True, kind)
+            self.app.go_page(1 if self.app.page_index == 0 else -1)
+            self.assertEqual(self.app.canvas_host.opacity, 0 if kind == "fade" else 1)
+            await asyncio.sleep(0.08)
+            self.assertEqual(self.app.canvas_host.offset, (0, 0))
+            self.assertEqual(self.app.canvas_host.opacity, 1)
+            self.assertEqual(self.app.canvas_host.scale, 1)
+        self.app.apply_page_animation(True, "fade")
+        self.app.go_page(-1)
+        stale_revision = self.app._page_transition_revision
+        self.app.go_page(1)
+        with patch("main.asyncio.sleep", new=AsyncMock()):
+            await self.app._finish_page_transition(stale_revision)
+        self.assertEqual(self.app.canvas_host.opacity, 0)
+        self.app.apply_page_animation(False, "fade")
+        await asyncio.sleep(0.08)
+        self.assertEqual(self.app.canvas_host.opacity, 1)
+
     async def test_invalid_file_reports_error_without_exiting(self) -> None:
         self.app.import_book(str(self.root / "missing.pdf"))
         self.assertIsNone(self.app.book)

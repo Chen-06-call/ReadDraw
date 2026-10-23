@@ -8,7 +8,6 @@ import flet as ft
 
 from .version import APP_TAG
 from .drawing import SHAPE_TYPES
-from .animation import page_slide_offset
 
 ACCENT = "#217567"
 INK = "#233C3A"
@@ -309,8 +308,7 @@ def build_desktop(app):
         transition=ft.AnimatedSwitcherTransition.FADE,
         expand=True,
     )
-    # 阅读页以方向偏移进入，隐式动画由画布容器处理，不替换手势监听控件。
-    app.canvas_host.animate_offset = page_slide_offset()
+    app._configure_page_animation()
     root = ft.Column(
         [app.header, app.workspace_nav, app.workspace_switcher], expand=True, spacing=0
     )

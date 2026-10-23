@@ -24,11 +24,29 @@ from readdraw.updater import parse_release, version_tuple
 from readdraw.canvas_view import PageTransform
 from readdraw.canvas_view import ReadingCanvas
 from readdraw.attachment_tools import scaled_image_size
+from readdraw.animation import configure_page_animation
 from readdraw import config
 from readdraw.data_location import migrate_data_dir
 
 
 class CoreServiceTests(unittest.TestCase):
+    def test_page_animation_configuration_selects_one_effect_or_disables_all(self) -> None:
+        """设置只启用所选动画，关闭时清除所有隐式动画。"""
+        control = ft.Container()
+        for kind, expected in (
+            ("slide", "animate_offset"),
+            ("fade", "animate_opacity"),
+            ("scale", "animate_scale"),
+        ):
+            configure_page_animation(control, True, kind)
+            self.assertIsNotNone(getattr(control, expected))
+            for other in {"animate_offset", "animate_opacity", "animate_scale"} - {expected}:
+                self.assertIsNone(getattr(control, other))
+        configure_page_animation(control, False, "slide")
+        self.assertIsNone(control.animate_offset)
+        self.assertIsNone(control.animate_opacity)
+        self.assertIsNone(control.animate_scale)
+
     def test_shape_points_cover_common_geometry(self) -> None:
         start, end = (10.0, 20.0), (110.0, 80.0)
         self.assertEqual(shape_points("line", start, end), [[10.0, 20.0], [110.0, 80.0]])

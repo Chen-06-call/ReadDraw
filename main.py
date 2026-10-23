@@ -41,7 +41,10 @@ from readdraw.reader import open_document, render_page
 from readdraw.settings_view import create_settings_dialog
 from readdraw.desktop_view import build_desktop
 from readdraw.bookmark_view import bookmark_entries
-from readdraw.animation import page_slide_offset
+from readdraw.animation import (
+    DEFAULT_PAGE_ANIMATION, PAGE_ANIMATION_OPTIONS,
+    configure_page_animation,
+)
 from readdraw.keyboard_state import is_alt_pressed, is_control_pressed
 from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
@@ -57,6 +60,15 @@ class ReadDrawApp:
         self.book: Book | None = None
         self.document: Any = None
         self.page_index = 0
+        self._page_transition_revision = 0
+        self.page_animation_enabled = bool(config.get_setting(
+            "page_animation_enabled", config.DEFAULT_PAGE_ANIMATION_ENABLED
+        ))
+        self.page_animation_type = config.get_setting(
+            "page_animation_type", DEFAULT_PAGE_ANIMATION
+        )
+        if self.page_animation_type not in PAGE_ANIMATION_OPTIONS:
+            self.page_animation_type = DEFAULT_PAGE_ANIMATION
         self.base_image: PILImage.Image | None = None
         self.strokes: list[dict[str, Any]] = []
         self.history: list[list[dict[str, Any]]] = []
@@ -346,9 +358,37 @@ class ReadDrawApp:
         dialog = create_settings_dialog(
             self.background_color, self.settings_path_text,
             self.apply_background, self.choose_data_dir,
+            self.apply_page_animation,
             lambda event: self.page.pop_dialog(),
+            self.page_animation_enabled, self.page_animation_type,
         )
         self.page.show_dialog(dialog)
+
+    def apply_page_animation(self, enabled: bool, animation_type: str) -> bool:
+        """保存翻页动画选项，并立即同步到阅读画布。"""
+        if animation_type not in PAGE_ANIMATION_OPTIONS:
+            return False
+        try:
+            config.save_settings(
+                page_animation_enabled=bool(enabled),
+                page_animation_type=animation_type,
+            )
+        except OSError as exc:
+            self.show_error(f"保存翻页动画设置失败：{exc}")
+            return False
+        self.page_animation_enabled = bool(enabled)
+        self.page_animation_type = animation_type
+        # 使尚未完成的旧转场失效，避免切换设置后旧任务又改回画布状态。
+        self._page_transition_revision += 1
+        self._configure_page_animation()
+        self.canvas_host.update()
+        return True
+
+    def _configure_page_animation(self) -> None:
+        """按设置启用单一翻页动画，关闭时清除隐式动画属性。"""
+        configure_page_animation(
+            self.canvas_host, self.page_animation_enabled, self.page_animation_type
+        )
 
     async def check_updates(self, _=None) -> None:
         self.status.value = "正在检查 GitHub Releases..."
@@ -454,6 +494,8 @@ class ReadDrawApp:
 
     def open_book(self, book: Book) -> None:
         try:
+            self._page_transition_revision += 1
+            self._configure_page_animation()
             if self.bookmark_editor.visible:
                 self.cancel_bookmark()
             self.finish_drawing()
@@ -757,19 +799,35 @@ class ReadDrawApp:
         self.finish_drawing()
         # 每次翻页都回到适合窗口的默认视图，避免新页面继承旧页的放大和偏移。
         self.drawing_view.reset_view(relayout=False)
-        self.canvas_host.offset = (direction * 0.08, 0)
+        self._page_transition_revision += 1
+        revision = self._page_transition_revision
+        self._configure_page_animation()
+        if self.page_animation_enabled:
+            # 起始帧立即定位，下一帧才启用过渡，避免先向外移动再折返。
+            if self.page_animation_type == "slide":
+                self.canvas_host.animate_offset = ft.Animation(0)
+                self.canvas_host.offset = (direction * 0.08, 0)
+            elif self.page_animation_type == "fade":
+                self.canvas_host.animate_opacity = ft.Animation(0)
+                self.canvas_host.opacity = 0
+            elif self.page_animation_type == "scale":
+                self.canvas_host.animate_scale = ft.Animation(0)
+                self.canvas_host.scale = 0.97
         self.page_index = target
         self.store.update_page(self.book.id, self.page_index)
         # 避免整页刷新替换阅读区监听器，解决缩放后滚轮事件需要重新点按的问题。
         self.load_page(update_page=False)
         self.refresh_library()
         self.update_reader_controls()
-        self.page.run_task(self._finish_page_transition)
+        if self.page_animation_enabled:
+            self.page.run_task(self._finish_page_transition, revision)
 
-    async def _finish_page_transition(self) -> None:
-        """短暂保留起始偏移，让新页面从对应方向平滑滑入。"""
-        await asyncio.sleep(0.016)
-        self.canvas_host.offset = (0, 0)
+    async def _finish_page_transition(self, revision: int) -> None:
+        """让新页面从所选动画的起始状态平滑进入。"""
+        await asyncio.sleep(0.035)
+        if self._closed or revision != self._page_transition_revision:
+            return
+        self._configure_page_animation()
         try:
             self.canvas_host.update()
         except RuntimeError:
