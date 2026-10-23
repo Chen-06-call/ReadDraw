@@ -1,6 +1,6 @@
 ﻿param(
     [switch]$OneDir,
-    [string]$Version = "v0.0.8",
+    [string]$Version = "v0.0.13",
     [switch]$RequireInstaller
 )
 
@@ -59,17 +59,17 @@ $sourceExe = if ($OneDir) {
 if (-not (Test-Path -LiteralPath $sourceExe)) {
     throw "Build output not found: $sourceExe"
 }
-$releaseExe = Join-Path $releaseDirectory "ReadDraw-v$normalizedVersion-windows-x64.exe"
+$releaseExe = Join-Path $releaseDirectory "ReadDraw.exe"
 Copy-Item -LiteralPath $sourceExe -Destination $releaseExe -Force
 $hash = (Get-FileHash -LiteralPath $releaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
-$shaPath = "$releaseExe.sha256"
-"$hash  $(Split-Path $releaseExe -Leaf)" | Set-Content -LiteralPath $shaPath -Encoding ascii
+$shaPath = Join-Path $releaseDirectory "ReadDraw.exe.sha256"
+"$hash  ReadDraw.exe" | Set-Content -LiteralPath $shaPath -Encoding ascii
 $manifest = [ordered]@{
     version = $normalizedVersion
     tag = "v$normalizedVersion"
     product = "ReadDraw"
     platform = "windows-x64"
-    asset = (Split-Path $releaseExe -Leaf)
+    asset = "ReadDraw.exe"
     sha256 = $hash
     release_url = "https://github.com/Chen-06-call/ReadDraw/releases/tag/v$normalizedVersion"
 }
@@ -89,6 +89,13 @@ if ($nsisPath) {
     if ($LASTEXITCODE -ne 0) {
         throw "NSIS installer build failed."
     }
+} else {
+    # 不允许保留旧安装包，以免和本次主程序版本不一致。
+    Remove-Item -LiteralPath (Join-Path $releaseDirectory "ReadDraw-Setup.exe") -Force -ErrorAction SilentlyContinue
 }
+# 每次成功构建后移除按版本命名的旧产物，避免误传过期文件。
+Get-ChildItem -LiteralPath $releaseDirectory -File |
+    Where-Object { $_.Name -match '^ReadDraw-(Setup-v.+|v.+-windows-x64\.exe)(\.sha256)?$' } |
+    Remove-Item -Force
 Write-Host "ReadDraw package created: $sourceExe"
 Write-Host "Release assets created under $releaseDirectory"

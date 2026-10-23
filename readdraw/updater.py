@@ -32,13 +32,19 @@ def parse_release(payload: dict) -> ReleaseInfo | None:
     # The installer is also an exe, but self-update must replace the running
     # portable application with the windows-x64 build.
     asset = next(
-        (
-            item
-            for item in assets
-            if str(item.get("name", "")).lower().endswith("windows-x64.exe")
-        ),
+        (item for item in assets if str(item.get("name", "")).lower() == "readdraw.exe"),
         None,
     )
+    if asset is None:
+        # 兼容历史 Release 的版本号命名，直到旧版本用户完成升级。
+        asset = next(
+            (
+                item
+                for item in assets
+                if str(item.get("name", "")).lower().endswith("windows-x64.exe")
+            ),
+            None,
+        )
     if asset is None:
         asset = next(
             (

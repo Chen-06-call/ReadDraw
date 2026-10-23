@@ -1,7 +1,7 @@
 Unicode True
 RequestExecutionLevel user
 Name "ReadDraw"
-OutFile "..\release\ReadDraw-Setup-v${APP_VERSION}.exe"
+OutFile "..\release\ReadDraw-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\ReadDraw"
 InstallDirRegKey HKCU "Software\ReadDraw" "InstallDir"
 Icon "..\assets\ReadDraw.ico"

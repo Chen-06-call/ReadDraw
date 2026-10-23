@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pymupdf
+import flet as ft
 from PIL import Image
 from flet.messaging.connection import Connection
 from flet.messaging.session import Session
@@ -45,8 +46,19 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.connection = RecordingConnection()
         self.session = Session(self.connection)
+        # 单元测试不读取测试电脑的实体键盘，界面集成时才使用系统即时状态。
+        self.enterContext(patch("main.is_alt_pressed", side_effect=lambda fallback: fallback))
         self.app = ReadDrawApp(self.session.page)
         self.session.get_page_patch()
+
+    async def test_desktop_root_fills_window_without_keyboard_wrapper(self) -> None:
+        """根布局直接填满窗口，不经过额外的键盘监听包装。"""
+        root = self.session.page.controls[0]
+        self.assertIsInstance(root, ft.Column)
+        self.assertTrue(root.expand)
+        self.assertEqual(self.session.page.window.width, 1280)
+        self.assertEqual(self.session.page.window.height, 800)
+        self.assertTrue(self.session.page.window.maximized)
 
     async def asyncTearDown(self) -> None:
         if self.app.document:
@@ -182,6 +194,35 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120)))
         self.assertGreater(self.app.drawing_view.zoom, previous_zoom)
 
+    async def test_scroll_pages_in_every_tool_and_arrow_keys(self) -> None:
+        """普通滚轮和左右箭头翻页不受当前绘画工具影响。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.app.set_tool("pen")
+        self.assertEqual(self.app.page_index, 0)
+        self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120)))
+        self.assertEqual(self.app.page_index, 1)
+        self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120)))
+        self.assertEqual(self.app.page_index, 0)
+        self.app.on_keyboard_event(SimpleNamespace(key="ArrowRight", alt=False))
+        self.assertEqual(self.app.page_index, 1)
+        self.app.on_keyboard_event(SimpleNamespace(key="ArrowLeft", alt=False))
+        self.assertEqual(self.app.page_index, 0)
+
+    async def test_alt_scroll_zoom_works_outside_mouse_mode(self) -> None:
+        """按住 Alt 的滚轮缩放在画笔和荧光笔模式下同样可用。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.app.set_tool("marker")
+        self.app.alt_pressed = True
+        previous_zoom = self.app.drawing_view.zoom
+        self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120)))
+        self.assertGreater(self.app.drawing_view.zoom, previous_zoom)
+        # 松开 Alt 后系统即时状态优先，即使页面缓存仍为 True 也应恢复翻页。
+        with patch("main.is_alt_pressed", return_value=False):
+            zoom_after = self.app.drawing_view.zoom
+            self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120)))
+            self.assertEqual(self.app.page_index, 1)
+            self.assertEqual(self.app.drawing_view.zoom, zoom_after)
+
     async def test_continuous_image_drag_saves_only_on_release(self) -> None:
         """走真实的 Flet 事件解码与控件回调，连续移动后翻页仍保留最终位置。"""
         self.app.import_book(str(self.create_pdf()))
@@ -193,7 +234,7 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.session.get_page_patch()
         canvas = self.app.drawing_view
         position = canvas.attachment_controls[attachment.id]
-        detector = position.content
+        detector = position.content.controls[0]
         initial_left, initial_top = position.left, position.top
         with patch.object(self.app.store, "update_attachment_position", wraps=self.app.store.update_attachment_position) as save:
             await self.session.dispatch_event(detector._i, "pan_start", {
@@ -206,7 +247,7 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
                 })
                 self.assertAlmostEqual(position.left, initial_left + dx)
                 self.assertAlmostEqual(position.top, initial_top + dy)
-                self.assertIs(position.content, detector)
+                self.assertIs(position.content.controls[0], detector)
             save.assert_not_called()
             # 松开时鼠标继续向前移动，必须保存结束坐标，不能漏掉最后一段。
             await self.session.dispatch_event(detector._i, "pan_end", {
@@ -246,6 +287,43 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(attachment.id, self.app.drawing_view.attachment_controls)
         self.assertFalse(self.app.image_btn.disabled)
         self.assertFalse(self.app._closed)
+
+    async def test_inserted_image_can_be_resized_and_deleted(self) -> None:
+        """图片编辑操作同步更新数据库与文件，不重载书页或清空笔迹。"""
+        self.app.import_book(str(self.create_pdf()))
+        source = self.root / "editable.png"
+        Image.new("RGB", (100, 50), "green").save(source)
+        attachment = self.app.store.add_attachment(self.app.book.id, 0, str(source))
+        self.app.attachments = self.app.store.attachments(self.app.book.id, 0)
+        self.app.load_page()
+        attachment = self.app.attachments[0]
+        original_page = self.app.drawing_view.image.src
+        self.app.set_tool("mouse")
+        self.app.drawing_view._select_attachment(attachment)
+
+        canvas = self.app.drawing_view
+        handle = canvas.attachment_resize_handles[attachment.id]
+        with patch.object(self.app.store, "update_attachment_size", wraps=self.app.store.update_attachment_size) as save:
+            await self.session.dispatch_event(handle._i, "pan_start", {
+                "k": "mouse", "g": {"x": 500, "y": 300}, "l": {"x": 20, "y": 20},
+            })
+            await self.session.dispatch_event(handle._i, "pan_update", {
+                "g": {"x": 550, "y": 325}, "l": {"x": 20, "y": 20},
+            })
+            self.assertEqual(save.call_count, 0)
+            await self.session.dispatch_event(handle._i, "pan_end", {
+                "g": {"x": 550, "y": 325}, "l": {"x": 20, "y": 20}, "v": {"x": 0, "y": 0},
+            })
+            self.assertEqual(save.call_count, 1)
+        saved = self.app.store.attachments(self.app.book.id, 0)[0]
+        self.assertGreater(saved.width, 100)
+        self.assertEqual(saved.width / saved.height, 2)
+        image_file = Path(saved.path)
+        self.app.drawing_view._delete_attachment(attachment)
+        self.assertFalse(image_file.exists())
+        self.assertEqual(self.app.store.attachments(self.app.book.id, 0), [])
+        self.assertEqual(self.app.attachments, [])
+        self.assertIs(self.app.drawing_view.image.src, original_page)
 
     async def test_invalid_image_and_picker_errors_leave_app_usable(self) -> None:
         """损坏图片、失效路径或选择器异常都只提示错误，且不留下无效附件。"""

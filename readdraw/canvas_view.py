@@ -1,6 +1,6 @@
 """Stable raster background and a lightweight, responsive vector ink layer."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Any, Callable
 
@@ -9,6 +9,7 @@ import flet.canvas as cv
 from PIL import Image
 
 from .drawing import compose_page, image_data
+from .attachment_tools import image_toolbar, scaled_image_size
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,17 @@ class AttachmentDrag:
     scale: float
 
 
+@dataclass(frozen=True)
+class AttachmentResizeDrag:
+    """记录缩放手势的起点和初始尺寸，保证连续拖动不累计误差。"""
+
+    pointer_x: float
+    pointer_y: float
+    width: int
+    height: int
+    scale: float
+
+
 class ReadingCanvas:
     """Keep the gesture detector mounted throughout an entire pen gesture.
 
@@ -60,6 +72,8 @@ class ReadingCanvas:
     def __init__(self, on_start: Callable, on_move: Callable, on_end: Callable,
                  on_attachment_move: Callable | None = None,
                  on_attachment_end: Callable | None = None,
+                 on_attachment_resize: Callable | None = None,
+                 on_attachment_delete: Callable | None = None,
                  can_drag_attachments: Callable[[], bool] | None = None,
                  on_zoom: Callable | None = None) -> None:
         self.image = ft.Image(
@@ -94,9 +108,17 @@ class ReadingCanvas:
         self.zoom = 1.0
         self.attachments: list[Any] = []
         self.attachment_controls: dict[str, ft.Container] = {}
+        self.attachment_detectors: dict[str, ft.GestureDetector] = {}
+        self.attachment_images: dict[str, ft.Image] = {}
+        self.attachment_resize_handles: dict[str, ft.GestureDetector] = {}
+        self.attachment_toolbars: dict[str, ft.Container] = {}
+        self.selected_attachment_id: str | None = None
         self._attachment_drags: dict[str, AttachmentDrag] = {}
+        self._attachment_resize_drags: dict[str, AttachmentResizeDrag] = {}
         self.on_attachment_move = on_attachment_move
         self.on_attachment_end = on_attachment_end
+        self.on_attachment_resize = on_attachment_resize
+        self.on_attachment_delete = on_attachment_delete
         self.can_drag_attachments = can_drag_attachments or (lambda: True)
         self.strokes: list[dict[str, Any]] = []
         self.active_path: cv.Path | None = None
@@ -108,6 +130,7 @@ class ReadingCanvas:
         self.image.visible = True
         self.page_size = base.size
         self.attachments = attachments
+        self.selected_attachment_id = None
         self.strokes = strokes
         self.layout()
 
@@ -132,13 +155,20 @@ class ReadingCanvas:
         """按当前缩放重建附件控件，附件位置始终保存为书页像素。"""
         # 页面或尺寸变化会替换手势控件，旧手势不应继续修改新页面。
         self._attachment_drags.clear()
+        self._attachment_resize_drags.clear()
         self.attachment_layer.controls.clear()
         self.attachment_controls.clear()
+        self.attachment_detectors.clear()
+        self.attachment_images.clear()
+        self.attachment_resize_handles.clear()
+        self.attachment_toolbars.clear()
         for attachment in self.attachments:
             try:
                 with Image.open(attachment.path) as source:
-                    image = source.convert("RGBA")
-                    image.thumbnail((max(1, attachment.width), max(1, attachment.height)))
+                    image = source.convert("RGBA").resize(
+                        (max(1, attachment.width), max(1, attachment.height)),
+                        Image.Resampling.LANCZOS,
+                    )
                     payload = image_data(image)
             except (OSError, ValueError):
                 continue
@@ -147,26 +177,182 @@ class ReadingCanvas:
                                      height=attachment.height * self.transform.scale)
             detector = ft.GestureDetector(
                 content=image_control,
+                width=attachment.width * self.transform.scale,
+                height=attachment.height * self.transform.scale,
                 mouse_cursor=ft.MouseCursor.MOVE,
                 drag_interval=16,
+                on_tap_up=lambda event, item=attachment: self._select_attachment(item),
                 on_pan_start=lambda event, item=attachment: self._begin_attachment_drag(item, event),
                 on_pan_update=lambda event, item=attachment: self._move_attachment(item, event),
                 on_pan_end=lambda event, item=attachment: self._end_attachment_drag(item, event),
                 on_pan_cancel=lambda event, item=attachment: self._end_attachment_drag(item),
             )
-            position = ft.Container(content=detector,
+            children = [detector]
+            resize_handle = ft.GestureDetector(
+                content=ft.Container(
+                    content=ft.Icon(ft.Icons.OPEN_IN_FULL, size=12, color="#FFFFFF"),
+                    width=20, height=20, bgcolor="#217567", border_radius=3,
+                    alignment=ft.Alignment.CENTER,
+                ),
+                width=20, height=20,
+                visible=attachment.id == self.selected_attachment_id,
+                mouse_cursor=ft.MouseCursor.RESIZE_DOWN_RIGHT,
+                tooltip="拖动以调整图片大小",
+                drag_interval=16,
+                on_pan_start=lambda event, item=attachment: self._begin_attachment_resize(item, event),
+                on_pan_update=lambda event, item=attachment: self._resize_attachment_from_drag(item, event),
+                on_pan_end=lambda event, item=attachment: self._end_attachment_resize(item, event),
+                on_pan_cancel=lambda event, item=attachment: self._end_attachment_resize(item),
+            )
+            children.append(ft.Container(content=resize_handle, right=-1, bottom=-1))
+            self.attachment_resize_handles[attachment.id] = resize_handle
+            image_stack = ft.Stack(children, fit=ft.StackFit.EXPAND)
+            position = ft.Container(content=image_stack,
                                     left=self.transform.to_view(attachment.x, attachment.y)[0],
                                     top=self.transform.to_view(attachment.x, attachment.y)[1],
                                     width=attachment.width * self.transform.scale,
-                                    height=attachment.height * self.transform.scale)
+                                    height=attachment.height * self.transform.scale,
+                                    border=ft.Border.all(
+                                        2 if attachment.id == self.selected_attachment_id else 0,
+                                        "#217567",
+                                    ))
             self.attachment_layer.controls.append(position)
             self.attachment_controls[attachment.id] = position
+            self.attachment_detectors[attachment.id] = detector
+            self.attachment_images[attachment.id] = image_control
+            if attachment.id == self.selected_attachment_id:
+                self._add_attachment_toolbar(attachment, position)
+
+    def _attachment_toolbar(self, attachment: Any, position: ft.Container) -> ft.Container:
+        """选中图片时显示独立工具条，避免把编辑操作藏在右键菜单中。"""
+        toolbar = image_toolbar(lambda: self._delete_attachment(attachment))
+        self._position_attachment_toolbar(toolbar, position)
+        return toolbar
+
+    def _position_attachment_toolbar(self, toolbar: ft.Container, position: ft.Container) -> None:
+        toolbar.left = max(0, min(position.left, self.viewport[0] - toolbar.width))
+        toolbar.top = max(0, min(position.top - 38, self.viewport[1] - toolbar.height))
+
+    def _add_attachment_toolbar(self, attachment: Any, position: ft.Container) -> None:
+        toolbar = self._attachment_toolbar(attachment, position)
+        self.attachment_layer.controls.append(toolbar)
+        self.attachment_toolbars[attachment.id] = toolbar
+
+    def _update_attachment_layer(self) -> None:
+        """控件未挂载时保留模型状态，等页面挂载后再由 Flet 绘制。"""
+        try:
+            self.attachment_layer.update()
+        except RuntimeError:
+            pass
+
+    def _select_attachment(self, attachment: Any) -> None:
+        if not self.can_drag_attachments() or not self._has_attachment(attachment):
+            return
+        if self.selected_attachment_id == attachment.id:
+            return
+        previous = self.attachment_controls.get(self.selected_attachment_id)
+        if previous is not None:
+            previous.border = ft.Border.all(0, "#217567")
+            previous_handle = self.attachment_resize_handles.get(self.selected_attachment_id)
+            if previous_handle is not None:
+                previous_handle.visible = False
+            toolbar = self.attachment_toolbars.pop(self.selected_attachment_id, None)
+            if toolbar in self.attachment_layer.controls:
+                self.attachment_layer.controls.remove(toolbar)
+        self.selected_attachment_id = attachment.id
+        position = self.attachment_controls[attachment.id]
+        position.border = ft.Border.all(2, "#217567")
+        self.attachment_resize_handles[attachment.id].visible = True
+        self._add_attachment_toolbar(attachment, position)
+        self._update_attachment_layer()
+
+    def _has_attachment(self, attachment: Any) -> bool:
+        """页面切换后到达的旧控件事件不能操作新页面的数据。"""
+        return any(item is attachment for item in self.attachments)
+
+    def clear_attachment_selection(self) -> None:
+        """切换为绘画工具时移除编辑边框和工具条，不重建图片控件。"""
+        position = self.attachment_controls.get(self.selected_attachment_id)
+        if position is not None:
+            position.border = ft.Border.all(0, "#217567")
+        handle = self.attachment_resize_handles.get(self.selected_attachment_id)
+        if handle is not None:
+            handle.visible = False
+        for toolbar in self.attachment_toolbars.values():
+            self.attachment_layer.controls.remove(toolbar)
+        self.attachment_toolbars.clear()
+        self.selected_attachment_id = None
+
+    def _begin_attachment_resize(self, attachment: Any, event: Any) -> None:
+        pointer = self._global_pointer(event)
+        if (self.can_drag_attachments() and self._has_attachment(attachment)
+                and attachment.id == self.selected_attachment_id and pointer is not None):
+            self._attachment_resize_drags[attachment.id] = AttachmentResizeDrag(
+                *pointer, attachment.width, attachment.height, self.transform.scale,
+            )
+
+    def _resize_attachment_from_drag(self, attachment: Any, event: Any) -> None:
+        drag = self._attachment_resize_drags.get(attachment.id)
+        pointer = self._global_pointer(event)
+        if (not self.can_drag_attachments() or drag is None or pointer is None
+                or not self._has_attachment(attachment)):
+            return
+        # 沿右下角的对角方向计算缩放量，并保持原始宽高比。
+        dx = (pointer[0] - drag.pointer_x) / drag.scale
+        dy = (pointer[1] - drag.pointer_y) / drag.scale
+        factor = 1 + (dx * drag.width + dy * drag.height) / (drag.width ** 2 + drag.height ** 2)
+        target_width, target_height = scaled_image_size(
+            drag.width, drag.height, factor, self.page_size,
+            position=(attachment.x, attachment.y),
+        )
+        attachment.width, attachment.height = target_width, target_height
+        self._sync_attachment_size(attachment)
+
+    def _sync_attachment_size(self, attachment: Any) -> None:
+        position = self.attachment_controls.get(attachment.id)
+        image_control = self.attachment_images.get(attachment.id)
+        if position is None or image_control is None:
+            return
+        position.width = attachment.width * self.transform.scale
+        position.height = attachment.height * self.transform.scale
+        image_control.width, image_control.height = position.width, position.height
+        detector = self.attachment_detectors.get(attachment.id)
+        if detector is None:
+            return
+        detector.width, detector.height = position.width, position.height
+        self._update_attachment_layer()
+
+    def _end_attachment_resize(self, attachment: Any, event: Any = None) -> None:
+        drag = self._attachment_resize_drags.get(attachment.id)
+        if drag is None:
+            return
+        if event is not None:
+            self._resize_attachment_from_drag(attachment, event)
+        self._attachment_resize_drags.pop(attachment.id, None)
+        if not self._has_attachment(attachment):
+            return
+        if (attachment.width, attachment.height) == (drag.width, drag.height):
+            return
+        candidate = replace(attachment)
+        if self.on_attachment_resize and self.on_attachment_resize(candidate) is False:
+            attachment.width, attachment.height = drag.width, drag.height
+            self._sync_attachment_size(attachment)
+
+    def _delete_attachment(self, attachment: Any) -> None:
+        if not self.can_drag_attachments() or not self._has_attachment(attachment):
+            return
+        # 控制器先处理持久化；只有删除成功后才移除页面上的图片。
+        if self.on_attachment_delete and self.on_attachment_delete(attachment) is False:
+            return
+        self.selected_attachment_id = None
+        remaining = [item for item in self.attachments if item.id != attachment.id]
+        self.set_attachments(remaining)
 
     def set_attachments(self, attachments: list) -> None:
         """只更新附件层，插入图片时保留书页、笔迹和正在使用的画布控件。"""
         self.attachments = attachments
         self._build_attachment_layer()
-        self.attachment_layer.update()
+        self._update_attachment_layer()
 
     @staticmethod
     def _global_pointer(event: Any) -> tuple[float, float] | None:
@@ -179,7 +365,8 @@ class ReadingCanvas:
 
     def _begin_attachment_drag(self, attachment: Any, event: Any) -> None:
         pointer = self._global_pointer(event)
-        if self.can_drag_attachments() and pointer is not None:
+        if self.can_drag_attachments() and self._has_attachment(attachment) and pointer is not None:
+            self._select_attachment(attachment)
             self._attachment_drags[attachment.id] = AttachmentDrag(
                 *pointer, float(attachment.x), float(attachment.y), self.transform.scale
             )
@@ -197,8 +384,13 @@ class ReadingCanvas:
         if position is not None:
             # 显示保留亚像素精度，避免缩放后整像素取整使图片一格一格跳动。
             position.left, position.top = self.transform.to_view(x, y)
+            toolbar = self.attachment_toolbars.get(attachment.id)
+            if toolbar is not None:
+                self._position_attachment_toolbar(toolbar, position)
             try:
                 position.update()
+                if toolbar is not None:
+                    toolbar.update()
             except RuntimeError:
                 # 控件尚未挂载到真实页面时只保留模型位置，挂载后会按当前状态重绘。
                 pass

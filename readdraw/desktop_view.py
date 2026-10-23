@@ -88,10 +88,12 @@ def build_desktop(app):
     page.bgcolor = PAPER
     page.padding = 0
     page.spacing = 0
-    page.window.width = 1440
-    page.window.height = 960
-    page.window.min_width = 1180
-    page.window.min_height = 740
+    # 窗口启动时最大化，减少高 DPI 和较小屏幕上的布局裁切。
+    page.window.width = 1280
+    page.window.height = 800
+    page.window.min_width = 960
+    page.window.min_height = 620
+    page.window.maximized = True
     page.window.prevent_close = True
     page.window.on_event = app.on_window_event
     page.on_keyboard_event = app.on_keyboard_event
@@ -192,5 +194,9 @@ def build_desktop(app):
                          height=30, padding=ft.Padding.symmetric(horizontal=16), bgcolor=PAPER),
         ], expand=True, spacing=0),
     )
-    page.add(ft.Column([app.header, ft.Row([app.library_panel, center, app.notes_panel], expand=True, spacing=0)],
-                       expand=True, spacing=0))
+    root = ft.Column(
+        [app.header, ft.Row([app.library_panel, center, app.notes_panel], expand=True, spacing=0)],
+        expand=True, spacing=0,
+    )
+    # 页面级键盘事件已负责快捷键，根布局直接挂载，避免监听控件改变布局约束。
+    page.add(root)

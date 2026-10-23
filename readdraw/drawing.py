@@ -62,8 +62,10 @@ def compose_page(base_image: PILImage.Image, strokes: list[dict[str, Any]], atta
         composite.alpha_composite(layer)
     for attachment in attachments or []:
         try:
-            image = PILImage.open(attachment.path).convert("RGBA")
-            image.thumbnail((attachment.width, attachment.height))
+            image = PILImage.open(attachment.path).convert("RGBA").resize(
+                (max(1, attachment.width), max(1, attachment.height)),
+                PILImage.Resampling.LANCZOS,
+            )
             composite.alpha_composite(image, (attachment.x, attachment.y))
         except (OSError, ValueError):
             continue

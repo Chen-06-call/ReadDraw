@@ -36,6 +36,7 @@ from readdraw.models import Book
 from readdraw.reader import open_document, render_page
 from readdraw.settings_view import create_settings_dialog
 from readdraw.desktop_view import build_desktop
+from readdraw.keyboard_state import is_alt_pressed
 from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
 from readdraw.updater import ReleaseInfo, check_latest_release, download_update, is_packaged, schedule_windows_replace
@@ -71,6 +72,8 @@ class ReadDrawApp:
             self.start_stroke, self.update_stroke, self.end_stroke,
             on_attachment_move=self.on_attachment_move,
             on_attachment_end=self.on_attachment_end,
+            on_attachment_resize=self.on_attachment_resize,
+            on_attachment_delete=self.on_attachment_delete,
             can_drag_attachments=lambda: self.tool == "mouse",
             on_zoom=self.on_canvas_scroll,
         )
@@ -112,26 +115,37 @@ class ReadDrawApp:
         logging.getLogger("readdraw").error("Client event error: %s", getattr(event, "data", event))
 
     def on_keyboard_event(self, event: Any) -> None:
-        """记录 Alt 键状态，供画布滚轮缩放使用。"""
+        """处理全局快捷键：左右箭头翻页，并记录 Alt 状态。"""
         key = str(getattr(event, "key", "")).lower()
         self.alt_pressed = bool(getattr(event, "alt", False)) or key in {"alt", "alt left", "alt right"}
+        normalized_key = key.replace(" ", "").replace("_", "")
+        if normalized_key in {"arrowleft", "left"}:
+            self.go_page(-1)
+        elif normalized_key in {"arrowright", "right"}:
+            self.go_page(1)
 
     def on_canvas_scroll(self, event: Any) -> None:
-        """鼠标模式下按住 Alt 使用滚轮缩放页面。"""
-        if self.tool != "mouse" or not self.alt_pressed:
-            return
+        """Alt 加滚轮缩放页面，否则滚轮翻页，和当前绘画工具无关。"""
         delta = getattr(getattr(event, "scroll_delta", None), "y", 0.0)
-        if not delta:
+        if not delta or not self.document:
             return
-        factor = 1.1 if delta < 0 else 1 / 1.1
-        if self.drawing_view.set_zoom(self.drawing_view.zoom * factor):
+        if is_alt_pressed(self.alt_pressed):
+            factor = 1.1 if delta < 0 else 1 / 1.1
+            changed = self.drawing_view.set_zoom(self.drawing_view.zoom * factor)
+            status = f"按住 Alt 缩放：{self.drawing_view.zoom:.0%}"
+        else:
+            # 鼠标向下滚动进入下一页，向上滚动返回上一页。
+            self.go_page(1 if delta > 0 else -1)
+            changed = False
+            status = self.page_label.value
+        if changed:
             try:
                 self.drawing_view.control.update()
             except RuntimeError:
                 # 单元测试或页面重建期间控件可能暂未挂载，缩放状态仍已保存。
                 pass
-            self.status.value = f"鼠标模式：缩放 {self.drawing_view.zoom:.0%}"
-            self.status.update()
+        self.status.value = status
+        self.status.update()
 
     def color_button(self, color: str) -> ft.Control:
         return ft.Container(width=23, height=23, bgcolor=color, border_radius=12, border=ft.Border.all(2, "#FFFFFF"), tooltip=f"颜色 {color}", on_click=lambda e, c=color: self.set_color(c))
@@ -293,7 +307,9 @@ class ReadDrawApp:
             self.attachments = self.store.attachments(book_id, page_index)
             # 不重新渲染 PDF 或替换整个阅读区，减少原生选择框返回时的控件变更。
             self.drawing_view.set_attachments(self.attachments)
-            self.status.value = "图片已插入，选择鼠标工具可以移动"
+            self.set_tool("mouse")
+            self.drawing_view._select_attachment(self.attachments[-1])
+            self.status.value = "图片已插入：可拖动，点击图片上方的 − / + / 删除按钮编辑"
             self.status.color = "#217567"
             self.status.update()
             logger.info("图片插入完成：%s", attachment.id)
@@ -423,6 +439,8 @@ class ReadDrawApp:
         # 切换工具前提交笔迹，避免荧光笔与普通画笔共用尚未结束的手势。
         self.finish_drawing()
         self.tool = tool
+        if tool != "mouse":
+            self.drawing_view.clear_attachment_selection()
         self.drawing_view.detector.mouse_cursor = ft.MouseCursor.BASIC if tool == "mouse" else ft.MouseCursor.PRECISE
         self.mouse_btn.selected = tool == "mouse"
         self.pen_btn.selected = tool == "pen"
@@ -449,6 +467,31 @@ class ReadDrawApp:
             self.store.update_attachment_position(attachment.id, attachment.x, attachment.y)
             self.status.value = "图片位置已保存"
             self.status.update()
+
+    def on_attachment_resize(self, attachment: Any) -> bool:
+        """保存调整后的图片尺寸，重开书页后仍保持当前大小。"""
+        try:
+            self.store.update_attachment_size(attachment.id, attachment.width, attachment.height)
+        except Exception as exc:
+            logging.getLogger("readdraw").exception("保存图片尺寸失败")
+            self.show_error(f"无法调整图片：{exc}")
+            return False
+        self.status.value = f"图片大小已调整为 {attachment.width} × {attachment.height}"
+        self.status.update()
+        return True
+
+    def on_attachment_delete(self, attachment: Any) -> bool:
+        """删除当前图片记录和文件；画布负责只刷新附件图层。"""
+        try:
+            self.store.delete_attachment(attachment.id)
+        except Exception as exc:
+            logging.getLogger("readdraw").exception("删除图片失败")
+            self.show_error(f"无法删除图片：{exc}")
+            return False
+        self.attachments = [item for item in self.attachments if item.id != attachment.id]
+        self.status.value = "图片已删除"
+        self.status.update()
+        return True
 
     def set_color(self, color: str) -> None:
         if self.tool == "marker":

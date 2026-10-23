@@ -114,6 +114,26 @@ class Store:
         self.db.execute("UPDATE attachments SET x=?, y=? WHERE id=?", (int(x), int(y), attachment_id))
         self.db.commit()
 
+    def update_attachment_size(self, attachment_id: str, width: int, height: int) -> None:
+        """保存图片附件缩放后的书页尺寸。"""
+        self.db.execute(
+            "UPDATE attachments SET width=?, height=? WHERE id=?",
+            (int(width), int(height), attachment_id),
+        )
+        self.db.commit()
+
+    def delete_attachment(self, attachment_id: str) -> bool:
+        """删除附件记录及其本地图片，返回是否找到对应记录。"""
+        row = self.db.execute(
+            "SELECT path FROM attachments WHERE id=?", (attachment_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        self.db.execute("DELETE FROM attachments WHERE id=?", (attachment_id,))
+        self.db.commit()
+        Path(row["path"]).unlink(missing_ok=True)
+        return True
+
     def export_snapshot(self) -> dict[str, Any]:
         snapshot = {
             "books": [dict(row) for row in self.db.execute("SELECT * FROM books")],

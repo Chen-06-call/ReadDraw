@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import flet as ft
 from PIL import Image
 
 from readdraw.drawing import compose_page, point_near_stroke
@@ -18,6 +19,7 @@ from readdraw.sync_server import create_app
 from readdraw.updater import parse_release, version_tuple
 from readdraw.canvas_view import PageTransform
 from readdraw.canvas_view import ReadingCanvas
+from readdraw.attachment_tools import scaled_image_size
 from readdraw import config
 from readdraw.data_location import migrate_data_dir
 
@@ -55,6 +57,13 @@ class CoreServiceTests(unittest.TestCase):
             store.update_attachment_position(attachment.id, 80, 90)
             updated = store.attachments(book.id, 2)[0]
             self.assertEqual((updated.x, updated.y), (80, 90))
+            store.update_attachment_size(attachment.id, 120, 60)
+            updated = store.attachments(book.id, 2)[0]
+            self.assertEqual((updated.width, updated.height), (120, 60))
+            self.assertTrue(store.delete_attachment(attachment.id))
+            self.assertFalse(Path(attachment.path).exists())
+            self.assertEqual(store.attachments(book.id, 2), [])
+            self.assertFalse(store.delete_attachment(attachment.id))
             store.close()
 
     def test_pdf_render_and_drawing(self) -> None:
@@ -117,12 +126,17 @@ class CoreServiceTests(unittest.TestCase):
                     {
                         "name": "ReadDraw-v0.0.3-windows-x64.exe",
                         "browser_download_url": "https://example.test/ReadDraw.exe",
-                    }
+                    },
+                    {
+                        "name": "ReadDraw.exe",
+                        "browser_download_url": "https://example.test/latest.exe",
+                    },
                 ],
             }
         )
         self.assertIsNotNone(release)
-        self.assertEqual(release.asset_name, "ReadDraw-v0.0.3-windows-x64.exe")
+        self.assertEqual(release.asset_name, "ReadDraw.exe")
+        self.assertEqual(release.asset_url, "https://example.test/latest.exe")
         self.assertEqual(release.version, "0.0.3")
 
     def test_canvas_transform_round_trip(self) -> None:
@@ -184,6 +198,51 @@ class CoreServiceTests(unittest.TestCase):
             self.assertTrue(canvas.set_zoom(2.5))
             self.assertGreater(canvas.transform.scale, previous_scale)
             self.assertAlmostEqual(canvas.attachment_layer.controls[0].left, canvas.transform.to_view(attachment.x, attachment.y)[0])
+
+    def test_attachment_corner_drag_resizes_and_delete_control_remains(self) -> None:
+        """拖动图片右下角实时缩放，保持比例，并在松开后只保存一次。"""
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "inserted.png"
+            Image.new("RGBA", (80, 40), "red").save(image_path)
+            attachment = Attachment("image-1", "book-1", 0, str(image_path), "inserted.png", 24, 24, 200, 100, "now")
+            resized = []
+            deleted = []
+            canvas = ReadingCanvas(
+                lambda event: None, lambda event: None, lambda event: None,
+                on_attachment_resize=lambda item: resized.append((item.width, item.height)),
+                on_attachment_delete=lambda item: deleted.append(item.id),
+            )
+            canvas.set_page(Image.new("RGB", (600, 800), "white"), [attachment], [])
+            canvas._select_attachment(attachment)
+            self.assertEqual(canvas.selected_attachment_id, attachment.id)
+            self.assertEqual(len(canvas.attachment_layer.controls), 2)
+            handle = canvas.attachment_resize_handles[attachment.id]
+            self.assertTrue(handle.visible)
+            self.assertEqual(handle.mouse_cursor, ft.MouseCursor.RESIZE_DOWN_RIGHT)
+            self.assertEqual(canvas.attachment_toolbars[attachment.id].width, 36)
+            self.assertEqual(canvas.attachment_toolbars[attachment.id].content.tooltip, "删除图片")
+            start = SimpleNamespace(global_position=SimpleNamespace(x=100.0, y=100.0))
+            canvas._begin_attachment_resize(attachment, start)
+            pointer = SimpleNamespace(global_position=SimpleNamespace(
+                x=100.0 + 100 * canvas.transform.scale,
+                y=100.0 + 50 * canvas.transform.scale,
+            ))
+            canvas._resize_attachment_from_drag(attachment, pointer)
+            self.assertEqual((attachment.width, attachment.height), (300, 150))
+            self.assertAlmostEqual(attachment.width / attachment.height, 2)
+            self.assertEqual(resized, [])
+            self.assertEqual(canvas.attachment_controls[attachment.id].width,
+                             attachment.width * canvas.transform.scale)
+            canvas._end_attachment_resize(attachment, pointer)
+            self.assertEqual(resized, [(300, 150)])
+            canvas._delete_attachment(attachment)
+            self.assertEqual(deleted, [attachment.id])
+            self.assertEqual(canvas.attachments, [])
+
+    def test_attachment_size_keeps_ratio_and_page_bounds(self) -> None:
+        self.assertEqual(scaled_image_size(400, 200, 1.1, (600, 800)), (440, 220))
+        self.assertEqual(scaled_image_size(400, 200, 1.1, (420, 800)), (420, 210))
+        self.assertEqual(scaled_image_size(400, 200, 0.01, (600, 800)), (20, 10))
 
     def test_settings_merge_preserves_data_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
