@@ -307,7 +307,7 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stroke["tool"], "marker")
         self.assertEqual(stroke["color"], "#FFEB3B")
         self.assertEqual(stroke["width"], self.app.thickness * 4)
-        self.assertAlmostEqual(stroke["opacity"], 0.32)
+        self.assertAlmostEqual(stroke["opacity"], 0.20)
         self.app.undo()
         self.assertEqual(self.app.strokes, [])
         self.app.redo()

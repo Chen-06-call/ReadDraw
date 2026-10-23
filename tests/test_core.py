@@ -115,6 +115,20 @@ class CoreServiceTests(unittest.TestCase):
         pen.pop("opacity")
         self.assertEqual(compose_page(base, [pen]).getpixel((20, 20)), (228, 87, 86, 255))
 
+    def test_marker_live_canvas_uses_one_layer_for_the_whole_stroke(self) -> None:
+        """荧光笔实时更新时不应把每个线段的透明度重复叠加。"""
+        marker = {
+            "tool": "marker", "color": "#FFEB3B", "opacity": 0.20,
+            "width": 16, "points": [[10, 20], [30, 20]],
+        }
+        canvas = ReadingCanvas(lambda event: None, lambda event: None, lambda event: None)
+        canvas.set_page(Image.new("RGB", (100, 40), "white"), [], [marker])
+        self.assertEqual(len(canvas.ink.shapes), 1)
+        marker["points"].append([50, 20])
+        with patch.object(canvas.ink, "update"):
+            canvas.append(50, 20, stroke=marker)
+        self.assertEqual(len(canvas.ink.shapes), 1)
+
     def test_store_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "test.sqlite3")

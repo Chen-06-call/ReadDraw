@@ -13,7 +13,8 @@ from PIL import ImageColor
 
 
 MARKER_COLOR = "#FFEB3B"
-MARKER_OPACITY = 0.32
+# 荧光笔保持较低透明度，底层文字在长时间涂画后仍然清晰可见。
+MARKER_OPACITY = 0.20
 MARKER_WIDTH_MULTIPLIER = 4
 SHAPE_TYPES = {
     "line": "直线",

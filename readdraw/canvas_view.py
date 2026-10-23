@@ -577,9 +577,20 @@ class ReadingCanvas:
             color=color, stroke_width=width * self.transform.scale,
             style=ft.PaintingStyle.STROKE, stroke_cap=ft.StrokeCap.ROUND, stroke_join=ft.StrokeJoin.ROUND))
 
+    @staticmethod
+    def _is_marker(stroke: dict) -> bool:
+        """判断是否为荧光笔，兼容旧数据中仅保存透明度的笔迹。"""
+        return stroke.get("tool") == "marker" or (
+            "tool" not in stroke and float(stroke.get("opacity", 1.0)) < 1.0
+        )
+
     def _stroke_shapes(self, stroke: dict) -> list[cv.Path]:
         points = stroke.get("points", [])
         pressures = stroke.get("pressures", [])
+        # 荧光笔必须整条轨迹共用一个透明图层。逐段绘制会让重叠区域
+        # 反复叠加透明度，鼠标停留或慢速移动时就会把文字盖住。
+        if self._is_marker(stroke):
+            return [self._shape(stroke)] if points else []
         if len(points) < 2 or len(pressures) != len(points):
             return [self._shape(stroke)] if points else []
         return [self._shape(stroke, index, index + 2) for index in range(len(points) - 1)]
@@ -598,6 +609,15 @@ class ReadingCanvas:
     def append(self, x: float, y: float, pressure: float = 0.65,
                stroke: dict | None = None) -> None:
         if self.active_path is not None and stroke is not None:
+            if self._is_marker(stroke):
+                # 重新生成同一条路径并替换上一帧，避免透明度在每个线段上累加。
+                self.active_path = self._shape(stroke)
+                if self.ink.shapes:
+                    self.ink.shapes[-1] = self.active_path
+                else:
+                    self.ink.shapes.append(self.active_path)
+                self.ink.update()
+                return
             previous_index = len(stroke["points"]) - 2
             self.active_path = self._shape(stroke, previous_index, previous_index + 2)
             self.ink.shapes.append(self.active_path)
