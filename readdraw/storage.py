@@ -6,7 +6,7 @@ import json
 import base64
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pathlib import Path
@@ -45,6 +45,11 @@ class Store:
             path TEXT NOT NULL, name TEXT NOT NULL, x INTEGER NOT NULL DEFAULT 24,
             y INTEGER NOT NULL DEFAULT 24, width INTEGER NOT NULL DEFAULT 240,
             height INTEGER NOT NULL DEFAULT 180, created_at TEXT NOT NULL)""")
+        # 书页唯一，删除时保留标记；同步旧快照不会让已删除的书签重新出现。
+        self.db.execute("""CREATE TABLE IF NOT EXISTS bookmarks (
+            book_id TEXT NOT NULL, page INTEGER NOT NULL,
+            deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+            PRIMARY KEY(book_id, page))""")
         self.db.commit()
 
     def _migrate_books(self) -> None:
@@ -66,6 +71,30 @@ class Store:
     def update_page(self, book_id: str, page: int) -> None:
         self.db.execute("UPDATE books SET current_page=? WHERE id=?", (page, book_id))
         self.db.commit()
+
+    def bookmark_pages(self, book_id: str) -> list[int]:
+        """按页码返回当前书籍的有效书签，内部页码从零开始。"""
+        rows = self.db.execute(
+            "SELECT page FROM bookmarks WHERE book_id=? AND deleted=0 ORDER BY page",
+            (book_id,),
+        ).fetchall()
+        return [row["page"] for row in rows]
+
+    def toggle_bookmark(self, book_id: str, page: int) -> bool:
+        """切换指定页的书签，返回切换后是否已添加。"""
+        book = self.db.execute("SELECT pages FROM books WHERE id=?", (book_id,)).fetchone()
+        if book is None or not 0 <= page < book["pages"]:
+            raise ValueError("书签页码超出书籍范围")
+        row = self.db.execute(
+            "SELECT deleted FROM bookmarks WHERE book_id=? AND page=?", (book_id, page)
+        ).fetchone()
+        deleted = int(row is not None and not row["deleted"])
+        self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,updated_at) VALUES(?,?,?,?)
+            ON CONFLICT(book_id,page) DO UPDATE SET
+            deleted=excluded.deleted, updated_at=excluded.updated_at""",
+            (book_id, page, deleted, datetime.now(timezone.utc).isoformat(timespec="microseconds")))
+        self.db.commit()
+        return not bool(deleted)
 
     def get_strokes(self, book_id: str, page: int) -> list[dict[str, Any]]:
         row = self.db.execute("SELECT strokes FROM page_annotations WHERE book_id=? AND page=?", (book_id, page)).fetchone()
@@ -139,6 +168,7 @@ class Store:
             "books": [dict(row) for row in self.db.execute("SELECT * FROM books")],
             "page_annotations": [dict(row) for row in self.db.execute("SELECT * FROM page_annotations")],
             "text_annotations": [dict(row) for row in self.db.execute("SELECT * FROM text_annotations")],
+            "bookmarks": [dict(row) for row in self.db.execute("SELECT * FROM bookmarks")],
             "attachments": [],
         }
         for row in self.db.execute("SELECT * FROM attachments"):
@@ -157,6 +187,13 @@ class Store:
             self.db.execute("INSERT OR REPLACE INTO page_annotations VALUES(?,?,?,?)", [row[k] for k in ("book_id", "page", "strokes", "updated_at")])
         for row in snapshot.get("text_annotations", []):
             self.db.execute("INSERT OR REPLACE INTO text_annotations VALUES(?,?,?,?,?,?,?,?)", [row[k] for k in ("id", "book_id", "page", "kind", "content", "quote", "color", "created_at")])
+        for row in snapshot.get("bookmarks", []):
+            # 新版增加的可选字段不影响旧快照；冲突时保留更新时间更晚的操作。
+            self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(book_id,page) DO UPDATE SET
+                deleted=excluded.deleted, updated_at=excluded.updated_at
+                WHERE excluded.updated_at > bookmarks.updated_at""",
+                [row[key] for key in ("book_id", "page", "deleted", "updated_at")])
         for row in snapshot.get("attachments", []):
             data = row.get("data_base64", "")
             if data:

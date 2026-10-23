@@ -7,6 +7,7 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 - 导入并管理本地 PDF / EPUB
 - 通过“打开文件”按钮导入 PDF / EPUB
 - 记录每本书的阅读页码
+- 点击页码旁的书签图标添加 / 删除当前页书签；右侧书签目录按页码排列，点击即可跳页，重启后保留
 - 画笔、颜色、线条粗细、橡皮擦、撤销和恢复；可一键清除本页笔迹并撤销恢复
 - 半透明荧光笔和文字批注，按书籍与页码保存；荧光笔支持颜色、粗细、撤销、橡皮擦和 PNG 导出
 - 插入图片附件并合成到页面导出图；选中图片后可拖动、等比例缩放或删除
@@ -33,6 +34,19 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 
 - 工具栏“形状”按钮可选择直线、波浪线、圆形、方框、箭头、三角形和菱形；按住鼠标拖动绘制，过程实时预览。
 - 形状按普通笔迹保存，支持现有撤销、橡皮擦和 PNG 导出。
+
+### v0.1.8 页面书签
+
+- 工具栏书签图标切换当前页的收藏状态，未打开书籍时禁用。
+- 右侧新增可滚动书签目录，按页码排列并突出当前页，点击书签保存笔迹后跳转。
+- 书签保存到本地 SQLite，包含在数据迁移和同步快照中；同步删除标记可防止旧快照恢复已删书签。
+- 展示控件封装在 `readdraw/bookmark_view.py`，存储和业务逻辑分开，新增部分使用中文注释。
+
+### v0.1.7 形状绘制优化
+
+- 三角形可根据拖动方向绘制正三角形或倒三角形。
+- 方框与正方形合并为同一工具；按住 Ctrl 绘制正方形。圆形工具不按 Ctrl 绘制椭圆，按住 Ctrl 绘制正圆。
+- 形状按钮改为下拉菜单，状态提示说明 Ctrl 约束和三角形方向。
 
 ### v0.1.6 形状几何修复
 
@@ -142,7 +156,7 @@ python main.py
 
 ```powershell
 python -m pip install -r requirements-build.txt
-.\build_windows.ps1 -Version v0.1.6
+.\build_windows.ps1 -Version v0.1.8
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成固定名称的 `ReadDraw.exe`、`ReadDraw.exe.sha256` 和 `update.json`。每次成功构建后会清理旧的版本号命名产物，避免误上传过期文件。如果希望生成便于分发的文件夹版本：
@@ -154,26 +168,26 @@ Windows 版暂时停用资源管理器拖入功能，避免向 Flet 原生窗口
 桌面包排除了可选的 `pymupdf.layout` / ONNX 布局分析组件，PDF 显示和文字搜索使用 MuPDF。这样可以避免不必要的模型加载和相关本机组件启动崩溃。
 
 ```powershell
-.\build_windows.ps1 -Version v0.1.6 -OneDir
+.\build_windows.ps1 -Version v0.1.8 -OneDir
 ```
 
 ## 远程更新发布
 
-推送 `v0.1.6` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
+推送 `v0.1.8` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
 
 ```powershell
 git add .
-git commit -m "Prepare ReadDraw v0.1.6"
+git commit -m "Prepare ReadDraw v0.1.8"
 git push origin main
-git tag v0.1.6
-git push origin v0.1.6
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
 GitHub Actions 文件位于 `.github/workflows/release.yml`。源码运行时只支持检查版本，不会替换 Python 环境。
 
-也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.1.6`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
+也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.1.8`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
 
-如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.1.6`）：
+如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.1.8`）：
 
 - `release/ReadDraw-Setup.exe`：安装包，供首次安装。
 - `release/ReadDraw.exe`：主程序，供免安装运行与自动更新。

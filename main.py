@@ -6,6 +6,7 @@ import os
 import asyncio
 import logging
 import math
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -39,7 +40,8 @@ from readdraw.models import Book
 from readdraw.reader import open_document, render_page
 from readdraw.settings_view import create_settings_dialog
 from readdraw.desktop_view import build_desktop
-from readdraw.keyboard_state import is_alt_pressed
+from readdraw.bookmark_view import bookmark_entries
+from readdraw.keyboard_state import is_alt_pressed, is_control_pressed
 from readdraw.storage import Store
 from readdraw.sync_server import SyncServer
 from readdraw.updater import ReleaseInfo, check_latest_release, download_update, is_packaged, schedule_windows_replace
@@ -70,6 +72,7 @@ class ReadDrawApp:
         self._closing = False
         self._image_importing = False
         self.alt_pressed = False
+        self.control_pressed = False
         configured_background = config.get_setting("background", config.DEFAULT_BACKGROUND)
         self.background_color = configured_background if configured_background in config.BACKGROUND_OPTIONS.values() else config.DEFAULT_BACKGROUND
         self.drawing_view = ReadingCanvas(
@@ -111,6 +114,32 @@ class ReadDrawApp:
 
     def build(self) -> None:
         build_desktop(self)
+        self.refresh_bookmarks()
+
+    def refresh_bookmarks(self) -> None:
+        """同步当前页图标与本书目录；构建和翻页时统一调用。"""
+        pages = self.store.bookmark_pages(self.book.id) if self.book else []
+        marked = self.book is not None and self.page_index in pages
+        self.bookmark_btn.disabled = self.book is None or self.document is None
+        self.bookmark_btn.icon = ft.Icons.BOOKMARK if marked else ft.Icons.BOOKMARK_BORDER
+        self.bookmark_btn.icon_color = "#217567" if marked else "#233C3A"
+        self.bookmark_btn.tooltip = "删除当前页书签" if marked else "添加当前页书签"
+        self.bookmark_count.value = str(len(pages))
+        self.bookmark_list.controls = bookmark_entries(pages, self.page_index, self.navigate_to_page)
+
+    def toggle_bookmark(self, _=None) -> None:
+        """点击图标添加或删除当前页书签，仅刷新目录和状态。"""
+        if not self.book or not self.document:
+            return
+        try:
+            added = self.store.toggle_bookmark(self.book.id, self.page_index)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            self.show_error(f"保存书签失败：{exc}")
+            return
+        self.refresh_bookmarks()
+        self.status.value = f"已{'添加' if added else '删除'}第 {self.page_index + 1} 页书签"
+        for control in (self.bookmark_btn, self.bookmark_list, self.bookmark_count, self.status):
+            control.update()
 
     def toggle_library(self, _=None) -> None:
         self.library_panel.visible = not self.library_panel.visible
@@ -131,6 +160,7 @@ class ReadDrawApp:
         """处理全局快捷键：左右箭头翻页，并记录 Alt 状态。"""
         key = str(getattr(event, "key", "")).lower()
         self.alt_pressed = bool(getattr(event, "alt", False)) or key in {"alt", "alt left", "alt right"}
+        self.control_pressed = bool(getattr(event, "ctrl", False))
         normalized_key = key.replace(" ", "").replace("_", "")
         if normalized_key in {"arrowleft", "left"}:
             self.go_page(-1)
@@ -380,6 +410,7 @@ class ReadDrawApp:
         self.progress_text.value = f"阅读进度 {self.page_index + 1} / {self.document.page_count} 页\n{(self.page_index + 1) / self.document.page_count:.0%}"
         self.notes_text.value = f"{len(self.strokes)} 条绘画笔迹" if self.strokes else "当前页还没有绘画批注"
         self.refresh_annotations()
+        self.refresh_bookmarks()
         self.first_btn.disabled = self.page_index == 0
         self.prev_btn.disabled = self.page_index == 0
         self.next_btn.disabled = self.page_index >= self.document.page_count - 1
@@ -397,6 +428,9 @@ class ReadDrawApp:
             self.progress_text,
             self.notes_text,
             self.annotation_list,
+            self.bookmark_btn,
+            self.bookmark_list,
+            self.bookmark_count,
             self.first_btn,
             self.prev_btn,
             self.next_btn,
@@ -467,7 +501,8 @@ class ReadDrawApp:
             if self.active_stroke.get("shape"):
                 start = tuple(self.active_stroke["shape_start"])
                 self.active_stroke["points"] = shape_points(
-                    self.active_stroke["shape"], start, position
+                    self.active_stroke["shape"], start, position,
+                    constrain=self._is_control_pressed(event),
                 )
                 self.drawing_view.set_strokes(self.strokes)
                 self.drawing_view.ink.update()
@@ -545,39 +580,30 @@ class ReadDrawApp:
         self.pen_btn.selected = tool == "pen"
         self.marker_btn.selected = tool == "marker"
         self.eraser_btn.selected = tool == "eraser"
-        self.shape_btn.selected = tool == "shape"
+        self.shape_btn.bgcolor = "#E3EFE7" if tool == "shape" else "#FFFFFF"
+        self.shape_btn.elevation = 4 if tool == "shape" else 0
+        self.shape_btn.shadow_color = "#21756766" if tool == "shape" else "#00000000"
+        for item in self.shape_btn.items:
+            item.checked = item.content == SHAPE_TYPES.get(self.shape_type)
         self.thickness_slider.tooltip = "荧光笔粗细（普通画笔的 4 倍）" if tool == "marker" else "画笔粗细"
         self.status.value = {
             "mouse": "鼠标模式：可拖动图片，按住 Alt + 滚轮缩放",
             "marker": "荧光笔：按住鼠标在书页上涂画",
             "eraser": "橡皮擦",
             "pen": "画笔",
-            "shape": f"形状：{SHAPE_TYPES[self.shape_type]}，按住鼠标拖动绘制",
+            "shape": f"形状：{SHAPE_TYPES[self.shape_type]}，拖动绘制；按住 Ctrl 画正形，三角形反向拖动可画倒三角",
         }[tool]
         self.page.update()
 
-    def open_shape_picker(self, _=None) -> None:
-        """显示常用形状选择框，并将选中形状切换为当前绘制工具。"""
-        choices = [
-            ft.TextButton(
-                name,
-                icon=ft.Icons.CHECK if shape == self.shape_type else None,
-                on_click=lambda event, selected=shape: self.select_shape(selected),
-            )
-            for shape, name in SHAPE_TYPES.items()
-        ]
-        self.page.show_dialog(ft.AlertDialog(
-            modal=True,
-            title=ft.Text("选择形状"),
-            content=ft.Column(choices, tight=True, spacing=2),
-            actions=[ft.TextButton("取消", on_click=lambda event: self.page.pop_dialog())],
-        ))
+    def _is_control_pressed(self, event: Any = None) -> bool:
+        """优先读取桌面系统实时按键，其它平台回退到键盘和指针事件状态。"""
+        fallback = self.control_pressed or bool(getattr(event, "ctrl", False))
+        return is_control_pressed(fallback)
 
     def select_shape(self, shape: str) -> None:
         if shape not in SHAPE_TYPES:
             return
         self.shape_type = shape
-        self.page.pop_dialog()
         self.set_tool("shape")
 
     def on_attachment_move(self, _attachment: Any) -> None:

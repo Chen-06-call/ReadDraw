@@ -7,6 +7,7 @@ in the application controller; drawing coordinates stay in canvas_view.py.
 import flet as ft
 
 from .version import APP_TAG
+from .drawing import SHAPE_TYPES
 
 ACCENT = "#217567"
 INK = "#233C3A"
@@ -62,6 +63,9 @@ def build_toolbar(app):
     app.prev_btn = icon_button(ft.Icons.CHEVRON_LEFT_ROUNDED, "上一页", lambda e: app.go_page(-1), disabled=True)
     app.next_btn = icon_button(ft.Icons.CHEVRON_RIGHT_ROUNDED, "下一页", lambda e: app.go_page(1), disabled=True)
     app.last_btn = icon_button(ft.Icons.LAST_PAGE, "去到末尾页", app.go_to_last_page, disabled=True)
+    app.bookmark_btn = icon_button(
+        ft.Icons.BOOKMARK_BORDER, "添加当前页书签", app.toggle_bookmark, disabled=True
+    )
     app.page_input = ft.TextField(value="", width=48, height=34, dense=True,
         content_padding=ft.Padding.all(6), text_size=12, text_align=ft.TextAlign.CENTER,
         on_submit=app.jump_page, border_color=LINE, border_radius=7)
@@ -69,7 +73,25 @@ def build_toolbar(app):
     app.mouse_btn = tool_button(ft.Icons.PAN_TOOL_OUTLINED, "鼠标", lambda e: app.set_tool("mouse"))
     app.eraser_btn = tool_button(ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_tool("eraser"))
     app.marker_btn = tool_button(ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_tool("marker"))
-    app.shape_btn = tool_button(ft.Icons.FORMAT_SHAPES_OUTLINED, "选择形状", app.open_shape_picker)
+    app.shape_btn = ft.PopupMenuButton(
+        icon=ft.Icons.FORMAT_SHAPES_OUTLINED,
+        tooltip="选择形状",
+        icon_color=INK,
+        icon_size=19,
+        width=36,
+        height=36,
+        padding=0,
+        elevation=6,
+        shadow_color="#10182833",
+        items=[
+            ft.PopupMenuItem(
+                content=name,
+                checked=shape == app.shape_type,
+                on_click=lambda event, selected=shape: app.select_shape(selected),
+            )
+            for shape, name in SHAPE_TYPES.items()
+        ],
+    )
     app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", app.open_text_dialog)
     app.image_btn = icon_button(ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED, "插入图片", app.open_image_picker)
     app.sync_btn = icon_button(ft.Icons.LAN_OUTLINED, "局域网同步", app.toggle_sync)
@@ -91,6 +113,7 @@ def build_toolbar(app):
     ], spacing=1)
     navigation = ft.Row([
         app.first_btn, app.prev_btn, app.page_input, app.next_btn, app.last_btn, app.page_label,
+        app.bookmark_btn,
         ft.Container(expand=True),
         icon_button(ft.Icons.FIT_SCREEN_OUTLINED, "适合窗口", app.fit_page),
         icon_button(ft.Icons.DOWNLOAD_OUTLINED, "导出本页 PNG", app.export_png), app.sync_btn,
@@ -164,6 +187,9 @@ def build_desktop(app):
     app.progress_bar = ft.ProgressBar(value=0, height=4, color=ACCENT, bgcolor=LINE, border_radius=2)
     app.notes_text = label("在页面留下第一条笔记", 11)
     app.annotation_list = ft.ListView(expand=True, spacing=8)
+    # 目录高度固定并独立滚动，避免书签增多后挤占阅读区和文字编辑器。
+    app.bookmark_list = ft.ListView(height=130, spacing=3)
+    app.bookmark_count = label("0", 11)
     app.note_quote_field = ft.TextField(
         label="原文或选段（可选）", multiline=True, min_lines=2, max_lines=3,
         border_radius=6,
@@ -190,6 +216,10 @@ def build_desktop(app):
             ft.Row([ft.Icon(ft.Icons.STICKY_NOTE_2_OUTLINED, color=ACCENT, size=18),
                     label("阅读笔记", 14, INK, weight=ft.FontWeight.W_600)], spacing=8),
             ft.Container(height=5), app.progress_text, app.progress_bar,
+            ft.Divider(height=16, color=LINE),
+            ft.Row([label("书签目录", 12, INK, weight=ft.FontWeight.W_600),
+                    ft.Container(expand=True), app.bookmark_count]),
+            app.bookmark_list,
             ft.Divider(height=28, color=LINE),
             label("本页批注", 12, INK, weight=ft.FontWeight.W_600), app.notes_text,
             ft.Row([ft.TextButton("荧光笔", icon=ft.Icons.HIGHLIGHT_ROUNDED, on_click=lambda e: app.set_tool("marker")),

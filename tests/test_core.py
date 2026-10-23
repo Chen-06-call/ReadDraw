@@ -35,22 +35,38 @@ class CoreServiceTests(unittest.TestCase):
         for shape in ("rectangle", "triangle", "diamond"):
             points = shape_points(shape, start, end)
             self.assertEqual(points[0], points[-1])
-        self.assertEqual(len(shape_points("circle", start, end)), 49)
+        ellipse = shape_points("circle", start, end)
+        circle = shape_points("circle", start, end, constrain=True)
+        self.assertEqual(len(ellipse), 49)
+        self.assertEqual(len(circle), 49)
         self.assertEqual(len(shape_points("wave", start, end)), 49)
         arrow = shape_points("arrow", start, end)
         self.assertEqual(arrow[1], arrow[3])
 
-    def test_circle_and_square_keep_equal_dimensions_in_every_drag_direction(self) -> None:
+    def test_ctrl_constrains_circle_and_rectangle_to_equal_dimensions(self) -> None:
         for start, end in (((10, 20), (70, 80)), ((70, 80), (10, 20)),
                            ((70, 20), (10, 80)), ((10, 80), (70, 20))):
-            circle = shape_points("circle", start, end)
-            square = shape_points("square", start, end)
+            circle = shape_points("circle", start, end, constrain=True)
+            square = shape_points("rectangle", start, end, constrain=True)
             circle_width = max(point[0] for point in circle) - min(point[0] for point in circle)
             circle_height = max(point[1] for point in circle) - min(point[1] for point in circle)
             square_width = max(point[0] for point in square) - min(point[0] for point in square)
             square_height = max(point[1] for point in square) - min(point[1] for point in square)
             self.assertAlmostEqual(circle_width, circle_height, places=6)
             self.assertAlmostEqual(square_width, square_height, places=6)
+
+    def test_circle_without_ctrl_remains_ellipse(self) -> None:
+        points = shape_points("circle", (10, 20), (90, 60))
+        width = max(point[0] for point in points) - min(point[0] for point in points)
+        height = max(point[1] for point in points) - min(point[1] for point in points)
+        self.assertGreater(width, height)
+
+    def test_triangle_orientation_follows_vertical_drag_direction(self) -> None:
+        downward = shape_points("triangle", (10, 20), (90, 100))
+        upward = shape_points("triangle", (10, 100), (90, 20))
+        self.assertEqual(downward[0][1], 20)
+        self.assertEqual(upward[2][1], 100)
+        self.assertEqual(upward[0][1], 20)
 
     def test_shape_geometry_remains_anchored_to_original_pointer(self) -> None:
         start = (80.0, 90.0)

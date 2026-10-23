@@ -6,6 +6,7 @@ It does not replace a visual check in the Windows client.
 
 import asyncio
 import io
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,6 +109,34 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.app.first_btn.disabled)
         self.assertFalse(self.app.last_btn.disabled)
 
+    async def test_bookmark_button_and_directory_navigate_without_losing_ink(self) -> None:
+        """点击真实书签控件，验证图标切换、目录跳页及未完成笔迹保存。"""
+        self.assertTrue(self.app.bookmark_btn.disabled)
+        self.app.toggle_bookmark()
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        self.app.bookmark_btn.on_click(None)
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
+        self.assertEqual(self.app.bookmark_btn.tooltip, "删除当前页书签")
+        self.assertEqual(self.app.bookmark_count.value, "1")
+        self.app.go_page(1)
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
+        self.app.bookmark_btn.on_click(None)
+        self.assertEqual([entry.data for entry in self.app.bookmark_list.controls], [0, 1])
+        transform = self.app.drawing_view.transform
+        x, y = transform.to_view(30, 40)
+        await self.app.start_stroke(SimpleNamespace(local_x=x, local_y=y))
+        self.app.bookmark_list.controls[0].on_click(None)
+        self.assertEqual(self.app.page_index, 0)
+        self.assertTrue(self.app.store.get_strokes(self.app.book.id, 1))
+        self.assertEqual(self.app.store.books()[0].current_page, 0)
+        self.app.bookmark_btn.on_click(None)
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
+        self.assertEqual([entry.data for entry in self.app.bookmark_list.controls], [1])
+        self.app.bookmark_list.controls[0].on_click(None)
+        self.assertEqual(self.app.page_index, 1)
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
+
     async def test_selected_tool_uses_elevated_button_style(self) -> None:
         self.assertTrue(self.app.pen_btn.selected)
         self.assertEqual(
@@ -120,8 +149,29 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
             "#21756766",
         )
 
+    async def test_bookmark_directory_follows_book_selection_and_save_errors(self) -> None:
+        """切书后只展示本书书签；写入失败时保持图标和目录原状。"""
+        source = self.create_pdf()
+        self.app.import_book(str(source))
+        first_id = self.app.book.id
+        self.app.toggle_bookmark()
+        other = self.root / "other.pdf"
+        other.write_bytes(source.read_bytes())
+        self.app.import_book(str(other))
+        self.assertEqual(self.app.bookmark_count.value, "0")
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
+        with patch.object(self.app.store, "toggle_bookmark", side_effect=sqlite3.OperationalError("磁盘已满")):
+            self.app.toggle_bookmark()
+        self.assertIn("保存书签失败", self.app.status.value)
+        self.assertEqual(self.app.bookmark_count.value, "0")
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK_BORDER)
+        self.app.open_book(next(book for book in self.app.store.books() if book.id == first_id))
+        self.assertEqual(self.app.bookmark_count.value, "1")
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
+
     async def test_settings_migrate_open_library_and_preserve_background(self) -> None:
         self.app.import_book(str(self.create_pdf()))
+        self.app.toggle_bookmark()
         self.app.open_settings()
         self.assertTrue(self.app.apply_background("#FFFDF7"))
         destination = self.root / "relocated"
@@ -133,6 +183,8 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.get_setting("background"), "#FFFDF7")
         self.assertIsNotNone(self.app.book)
         self.assertTrue(self.app.drawing_view.image.visible)
+        self.assertEqual(self.app.store.bookmark_pages(self.app.book.id), [0])
+        self.assertEqual(self.app.bookmark_btn.icon, ft.Icons.BOOKMARK)
 
     async def test_invalid_file_reports_error_without_exiting(self) -> None:
         self.app.import_book(str(self.root / "missing.pdf"))
@@ -208,15 +260,11 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.tool, "marker")
         self.assertEqual(self.app.marker_color, "#12B76A")
 
-    async def test_shape_picker_draws_live_shape_and_saves_for_undo(self) -> None:
+    async def test_shape_dropdown_draws_live_shape_and_saves_for_undo(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.session.get_page_patch()
-        with patch.object(self.app.page, "show_dialog") as show_dialog:
-            self.app.open_shape_picker()
-            dialog = show_dialog.call_args.args[0]
-            self.assertEqual(len(dialog.content.controls), 8)
-            self.app.shape_type = "triangle"
-            self.app.set_tool("shape")
+        self.assertEqual(len(self.app.shape_btn.items), 7)
+        self.app.select_shape("triangle")
 
         transform = self.app.drawing_view.transform
         def pointer(x, y):
@@ -234,6 +282,23 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.store.get_strokes(self.app.book.id, 0)[0]["shape"], "triangle")
         self.app.undo()
         self.assertEqual(self.app.strokes, [])
+
+    async def test_ctrl_constrains_live_shape_while_held(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        self.app.select_shape("circle")
+        transform = self.app.drawing_view.transform
+        def pointer(x, y, ctrl=False):
+            return SimpleNamespace(local_x=transform.to_view(x, y)[0],
+                                   local_y=transform.to_view(x, y)[1], ctrl=ctrl)
+
+        await self.app.start_stroke(pointer(30, 40))
+        with patch("main.is_control_pressed", side_effect=lambda fallback: fallback):
+            await self.app.update_stroke(pointer(130, 80, ctrl=True))
+        points = self.app.active_stroke["points"]
+        width = max(point[0] for point in points) - min(point[0] for point in points)
+        height = max(point[1] for point in points) - min(point[1] for point in points)
+        self.assertAlmostEqual(width, height, places=5)
 
     async def test_clear_page_strokes_saves_and_can_be_undone(self) -> None:
         """一键清空本页笔迹但不影响文字批注，并可用撤销恢复。"""

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "发布标签，须与 readdraw/version.py 中的版本一致（如 v0.1.6）"
+        description: "发布标签，须与 readdraw/version.py 中的版本一致（如 v0.1.8）"
         required: true
         type: string
 

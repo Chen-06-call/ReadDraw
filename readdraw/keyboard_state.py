@@ -11,3 +11,13 @@ def is_alt_pressed(fallback: bool = False) -> bool:
 
     # VK_MENU 表示左右 Alt 键；最高位表示当前仍处于按下状态。
     return bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
+
+
+def is_control_pressed(fallback: bool = False) -> bool:
+    """读取 Ctrl 即时状态，让形状约束跟随按下和松开动作。"""
+    if sys.platform != "win32":
+        return fallback
+    import ctypes
+
+    # VK_CONTROL 表示左右 Ctrl 键；最高位表示当前仍处于按下状态。
+    return bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)

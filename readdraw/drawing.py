@@ -18,9 +18,8 @@ MARKER_WIDTH_MULTIPLIER = 4
 SHAPE_TYPES = {
     "line": "直线",
     "wave": "波浪线",
-    "circle": "圆形",
+    "circle": "圆形 / 椭圆",
     "rectangle": "方框",
-    "square": "正方形",
     "arrow": "箭头",
     "triangle": "三角形",
     "diamond": "菱形",
@@ -28,14 +27,15 @@ SHAPE_TYPES = {
 
 
 def shape_points(shape: str, start: tuple[float, float],
-                 end: tuple[float, float]) -> list[list[float]]:
+                 end: tuple[float, float], constrain: bool = False) -> list[list[float]]:
     """根据拖动边界生成可保存、可预览和可导出的形状点序列。"""
     x1, y1 = start
     x2, y2 = end
     if shape == "line":
         return [[x1, y1], [x2, y2]]
 
-    if shape in {"circle", "square"}:
+    if constrain and shape in {"circle", "rectangle"}:
+        # Ctrl 将拖动矩形约束为等宽等高；起点仍固定在按下鼠标的位置。
         side = max(abs(x2 - x1), abs(y2 - y1))
         x2 = x1 + (side if x2 >= x1 else -side)
         y2 = y1 + (side if y2 >= y1 else -side)
@@ -43,11 +43,15 @@ def shape_points(shape: str, start: tuple[float, float],
     left, right = sorted((x1, x2))
     top, bottom = sorted((y1, y2))
     width, height = right - left, bottom - top
-    if shape in {"rectangle", "square", "triangle", "diamond"}:
-        if shape in {"rectangle", "square"}:
+    if shape in {"rectangle", "triangle", "diamond"}:
+        if shape == "rectangle":
             points = [(left, top), (right, top), (right, bottom), (left, bottom)]
         elif shape == "triangle":
-            points = [((left + right) / 2, top), (right, bottom), (left, bottom)]
+            # 从上向下拖动绘制正三角形，反向拖动则将尖端翻到下方。
+            if y2 >= y1:
+                points = [((left + right) / 2, top), (right, bottom), (left, bottom)]
+            else:
+                points = [(left, top), (right, top), ((left + right) / 2, bottom)]
         else:
             points = [((left + right) / 2, top), (right, (top + bottom) / 2),
                       ((left + right) / 2, bottom), (left, (top + bottom) / 2)]
