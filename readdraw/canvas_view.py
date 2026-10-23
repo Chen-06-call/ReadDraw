@@ -1,6 +1,7 @@
 """Stable raster background and a lightweight, responsive vector ink layer."""
 
 from dataclasses import dataclass, replace
+import inspect
 import math
 from typing import Any, Callable
 
@@ -85,7 +86,6 @@ class ReadingCanvas:
                  on_attachment_resize: Callable | None = None,
                  on_attachment_delete: Callable | None = None,
                  can_drag_attachments: Callable[[], bool] | None = None,
-                 on_zoom: Callable | None = None,
                  can_pan_page: Callable[[], bool] | None = None,
                  on_pressure: Callable[[float], None] | None = None) -> None:
         self.image = ft.Image(
@@ -107,7 +107,6 @@ class ReadingCanvas:
             on_pan_end=self._end_pointer,
             on_pan_cancel=self._cancel_pointer,
             on_tap_up=on_end,
-            on_scroll=on_zoom,
             on_force_press_start=self._update_pressure,
             on_force_press_peak=self._update_pressure,
             on_force_press_update=self._update_pressure,
@@ -139,7 +138,6 @@ class ReadingCanvas:
         self.on_attachment_delete = on_attachment_delete
         self.can_drag_attachments = can_drag_attachments or (lambda: True)
         self.can_pan_page = can_pan_page or (lambda: False)
-        self.on_zoom = on_zoom
         self.on_pressure = on_pressure
         self.on_pointer_move = on_move
         self.on_pointer_end = on_end
@@ -209,7 +207,6 @@ class ReadingCanvas:
                 mouse_cursor=ft.MouseCursor.MOVE,
                 drag_interval=16,
                 on_tap_up=lambda event, item=attachment: self._select_attachment(item),
-                on_scroll=self._on_zoom,
                 on_pan_start=lambda event, item=attachment: self._begin_attachment_drag(item, event),
                 on_pan_update=lambda event, item=attachment: self._move_attachment(item, event),
                 on_pan_end=lambda event, item=attachment: self._end_attachment_drag(item, event),
@@ -518,22 +515,25 @@ class ReadingCanvas:
         self.detector.mouse_cursor = ft.MouseCursor.GRAB
         return True
 
-    def _update_pointer(self, event: Any) -> None:
+    async def _dispatch_pointer(self, callback: Callable, event: Any) -> None:
+        """转发手势事件，并等待异步笔迹回调完成。"""
+        result = callback(event)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _update_pointer(self, event: Any) -> None:
+        if self._page_pan is not None and (self.zoom <= 1.0 or not self.can_pan_page()):
+            self._page_pan = None
         if not self._move_page_pan(event):
-            self.on_pointer_move(event)
+            await self._dispatch_pointer(self.on_pointer_move, event)
 
-    def _end_pointer(self, event: Any = None) -> None:
+    async def _end_pointer(self, event: Any = None) -> None:
         if not self._end_page_pan(event):
-            self.on_pointer_end(event)
+            await self._dispatch_pointer(self.on_pointer_end, event)
 
-    def _cancel_pointer(self, event: Any) -> None:
+    async def _cancel_pointer(self, event: Any) -> None:
         if not self._end_page_pan():
-            self.on_pointer_end(event)
-
-    def _on_zoom(self, event: Any) -> None:
-        """画布和位于其上方的图片附件共用滚轮处理。"""
-        if self.on_zoom:
-            self.on_zoom(event)
+            await self._dispatch_pointer(self.on_pointer_end, event)
 
     def set_viewport(self, width: float, height: float) -> bool:
         """Accept measured finite host bounds, never the renderer's own size."""

@@ -7,7 +7,7 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 - 导入并管理本地 PDF / EPUB
 - 通过“打开文件”按钮导入 PDF / EPUB
 - 记录每本书的阅读页码
-- 画笔、颜色、线条粗细、橡皮擦、撤销和恢复
+- 画笔、颜色、线条粗细、橡皮擦、撤销和恢复；可一键清除本页笔迹并撤销恢复
 - 半透明荧光笔和文字批注，按书籍与页码保存；荧光笔支持颜色、粗细、撤销、橡皮擦和 PNG 导出
 - 插入图片附件并合成到页面导出图；选中图片后可拖动、等比例缩放或删除
 - 按住 Alt + 鼠标滚轮可以放大或缩小阅读页面
@@ -18,6 +18,21 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 - SQLite 本地保存，支持当前页 PNG 导出
 
 ## 运行
+
+### v0.1.3 清除本页笔迹与滚轮修复
+
+- 工具栏新增“清除本页笔迹”，清除后可通过撤销恢复；文字批注和图片附件不受影响。
+- 滚轮监听移至阅读区域外层；后续版本进一步避免翻页时整页刷新。
+
+### v0.1.4 页面导航与滚轮焦点修复
+
+- 增加回到首页和去到末尾页按钮，切换绘画工具时以阴影标出当前选项。
+- 缩放后翻页改为局部更新书页和导航控件，保持滚轮监听持续挂载。
+
+### v0.1.2 连续绘画与滚轮修复
+
+- 修复手势事件没有等待异步笔迹回调、拖动画线时只留下起笔点的问题。
+- 缩放和翻页时减少重复整页刷新，避免滚轮处理后丢失鼠标响应。
 
 ### v0.1.1 鼠标模拟压感
 
@@ -118,7 +133,7 @@ python main.py
 
 ```powershell
 python -m pip install -r requirements-build.txt
-.\build_windows.ps1 -Version v0.1.1
+.\build_windows.ps1 -Version v0.1.4
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成固定名称的 `ReadDraw.exe`、`ReadDraw.exe.sha256` 和 `update.json`。每次成功构建后会清理旧的版本号命名产物，避免误上传过期文件。如果希望生成便于分发的文件夹版本：
@@ -130,26 +145,26 @@ Windows 版暂时停用资源管理器拖入功能，避免向 Flet 原生窗口
 桌面包排除了可选的 `pymupdf.layout` / ONNX 布局分析组件，PDF 显示和文字搜索使用 MuPDF。这样可以避免不必要的模型加载和相关本机组件启动崩溃。
 
 ```powershell
-.\build_windows.ps1 -Version v0.1.1 -OneDir
+.\build_windows.ps1 -Version v0.1.4 -OneDir
 ```
 
 ## 远程更新发布
 
-推送 `v0.1.1` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
+推送 `v0.1.4` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
 
 ```powershell
 git add .
-git commit -m "Prepare ReadDraw v0.1.1"
+git commit -m "Prepare ReadDraw v0.1.4"
 git push origin main
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
 GitHub Actions 文件位于 `.github/workflows/release.yml`。源码运行时只支持检查版本，不会替换 Python 环境。
 
-也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.1.1`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
+也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.1.4`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
 
-如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.1.1`）：
+如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.1.4`）：
 
 - `release/ReadDraw-Setup.exe`：安装包，供首次安装。
 - `release/ReadDraw.exe`：主程序，供免安装运行与自动更新。

@@ -77,9 +77,12 @@ class ReadDrawApp:
             on_attachment_resize=self.on_attachment_resize,
             on_attachment_delete=self.on_attachment_delete,
             can_drag_attachments=lambda: self.tool == "mouse",
-            on_zoom=self.on_canvas_scroll,
             can_pan_page=lambda: self.tool == "mouse",
             on_pressure=self.update_stroke_pressure,
+        )
+        self.reader_scroll_detector = ft.GestureDetector(
+            content=self.drawing_view.control,
+            on_scroll=self.on_canvas_scroll,
         )
         self.erasing = False
         self.stroke_pressure = 0.65
@@ -137,15 +140,14 @@ class ReadDrawApp:
         delta = getattr(getattr(event, "scroll_delta", None), "y", 0.0)
         if not delta or not self.document:
             return
-        if is_alt_pressed(self.alt_pressed):
-            factor = 1.1 if delta < 0 else 1 / 1.1
-            changed = self.drawing_view.set_zoom(self.drawing_view.zoom * factor)
-            status = f"按住 Alt 缩放：{self.drawing_view.zoom:.0%}"
-        else:
-            # 鼠标向下滚动进入下一页，向上滚动返回上一页。
+        if not is_alt_pressed(self.alt_pressed):
+            # 翻页流程已经刷新页面，避免再次整页更新导致滚轮焦点丢失。
             self.go_page(1 if delta > 0 else -1)
-            changed = False
-            status = self.page_label.value
+            return
+
+        factor = 1.1 if delta < 0 else 1 / 1.1
+        changed = self.drawing_view.set_zoom(self.drawing_view.zoom * factor)
+        status = f"按住 Alt 缩放：{self.drawing_view.zoom:.0%}"
         if changed:
             try:
                 self.drawing_view.control.update()
@@ -358,7 +360,7 @@ class ReadDrawApp:
         except Exception as exc:
             self.show_error(f"无法打开书籍：{exc}")
 
-    def load_page(self) -> None:
+    def load_page(self, update_page: bool = True) -> None:
         if not self.document or not self.book: return
         self.finish_drawing()
         self.text_annotations = self.store.text_annotations(self.book.id, self.page_index)
@@ -369,16 +371,43 @@ class ReadDrawApp:
         self.history.clear()
         self.redo_stack.clear()
         self.drawing_view.set_page(self.base_image, self.attachments, self.strokes)
-        self.canvas_host.content = self.drawing_view.control
+        self.reader_scroll_detector.content = self.drawing_view.control
+        self.canvas_host.content = self.reader_scroll_detector
         self.page_input.value = str(self.page_index + 1)
         self.page_label.value = f"第 {self.page_index + 1} / {self.document.page_count} 页"
         self.progress_text.value = f"阅读进度 {self.page_index + 1} / {self.document.page_count} 页\n{(self.page_index + 1) / self.document.page_count:.0%}"
         self.notes_text.value = f"{len(self.strokes)} 条绘画笔迹" if self.strokes else "当前页还没有绘画批注"
         self.refresh_annotations()
+        self.first_btn.disabled = self.page_index == 0
         self.prev_btn.disabled = self.page_index == 0
         self.next_btn.disabled = self.page_index >= self.document.page_count - 1
+        self.last_btn.disabled = self.page_index >= self.document.page_count - 1
         self.status.value = f"正在阅读《{self.book.title}》"
-        self.page.update()
+        if update_page:
+            self.page.update()
+
+    def update_reader_controls(self) -> None:
+        """翻页时仅更新阅读区和相关控件，保留滚轮监听器的挂载状态。"""
+        for control in (
+            self.reader_scroll_detector,
+            self.page_input,
+            self.page_label,
+            self.progress_text,
+            self.notes_text,
+            self.annotation_list,
+            self.first_btn,
+            self.prev_btn,
+            self.next_btn,
+            self.last_btn,
+            self.status,
+            self.library_list,
+            self.library_count,
+        ):
+            try:
+                control.page
+            except RuntimeError:
+                continue
+            control.update()
 
     def update_canvas(self) -> None:
         """Refresh vector ink after undo/redo without touching the page image."""
@@ -556,26 +585,37 @@ class ReadDrawApp:
         self.thickness = int(e.control.value)
 
     def go_page(self, delta: int) -> None:
-        if self.document and 0 <= self.page_index + delta < self.document.page_count:
-            self.finish_drawing()
-            # 每次翻页都回到适合窗口的默认视图，避免新页面继承旧页的放大和偏移。
-            self.drawing_view.reset_view(relayout=False)
-            self.page_index += delta
-            self.store.update_page(self.book.id, self.page_index)
-            self.load_page()
-            self.refresh_library()
+        if self.document:
+            self.navigate_to_page(self.page_index + delta)
+
+    def go_to_first_page(self, _=None) -> None:
+        self.navigate_to_page(0)
+
+    def go_to_last_page(self, _=None) -> None:
+        if self.document:
+            self.navigate_to_page(self.document.page_count - 1)
+
+    def navigate_to_page(self, target: int) -> None:
+        if not self.document or not 0 <= target < self.document.page_count:
+            return
+        if target == self.page_index:
+            return
+        self.finish_drawing()
+        # 每次翻页都回到适合窗口的默认视图，避免新页面继承旧页的放大和偏移。
+        self.drawing_view.reset_view(relayout=False)
+        self.page_index = target
+        self.store.update_page(self.book.id, self.page_index)
+        # 避免整页刷新替换阅读区监听器，解决缩放后滚轮事件需要重新点按的问题。
+        self.load_page(update_page=False)
+        self.refresh_library()
+        self.update_reader_controls()
 
     def jump_page(self, e: Any) -> None:
         if not self.document: return
         try:
             target = int(e.control.value) - 1
             if not 0 <= target < self.document.page_count: raise ValueError
-            self.finish_drawing()
-            self.drawing_view.reset_view(relayout=False)
-            self.page_index = target
-            self.store.update_page(self.book.id, target)
-            self.load_page()
-            self.refresh_library()
+            self.navigate_to_page(target)
         except ValueError:
             self.page_input.value = str(self.page_index + 1)
             self.page_input.update()
@@ -596,6 +636,20 @@ class ReadDrawApp:
         self.strokes = self.redo_stack.pop()
         self.store.save_strokes(self.book.id, self.page_index, self.strokes)
         self.update_canvas()
+        self.page.update()
+
+    def clear_current_page_strokes(self, _=None) -> None:
+        """一键清除本页绘画笔迹，并保留撤销恢复能力。"""
+        self.finish_drawing()
+        if not self.book or not self.strokes:
+            return
+        self.history.append(clone_strokes(self.strokes))
+        self.redo_stack.clear()
+        self.strokes.clear()
+        self.store.save_strokes(self.book.id, self.page_index, self.strokes)
+        self.update_canvas()
+        self.notes_text.value = "当前页还没有绘画批注"
+        self.status.value = "本页笔迹已清除，可撤销恢复"
         self.page.update()
 
     def refresh_annotations(self) -> None:

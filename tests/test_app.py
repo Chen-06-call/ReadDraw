@@ -82,7 +82,8 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
             self.app.store.add_text_annotation(self.app.book.id, 0, "note", "Example note")
             self.app.load_page()
             self.assertEqual(len(self.app.annotation_list.controls), 1)
-            self.assertIs(self.app.canvas_host.content, self.app.drawing_view.control)
+            self.assertIs(self.app.canvas_host.content, self.app.reader_scroll_detector)
+            self.assertIs(self.app.reader_scroll_detector.content, self.app.drawing_view.control)
             with Image.open(io.BytesIO(self.app.drawing_view.image.src)) as rendered:
                 self.assertGreater(rendered.height, rendered.width)
             self.app.go_page(1)
@@ -90,6 +91,34 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(rendered.width, rendered.height)
             self.assertEqual(self.app.store.books()[0].current_page, 1)
             error.assert_not_called()
+
+    async def test_first_and_last_page_buttons_jump_to_document_boundaries(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+
+        self.app.go_to_last_page()
+        self.assertEqual(self.app.page_index, 1)
+        self.assertEqual(self.app.store.books()[0].current_page, 1)
+        self.assertTrue(self.app.last_btn.disabled)
+        self.assertFalse(self.app.first_btn.disabled)
+
+        self.app.go_to_first_page()
+        self.assertEqual(self.app.page_index, 0)
+        self.assertEqual(self.app.store.books()[0].current_page, 0)
+        self.assertTrue(self.app.first_btn.disabled)
+        self.assertFalse(self.app.last_btn.disabled)
+
+    async def test_selected_tool_uses_elevated_button_style(self) -> None:
+        self.assertTrue(self.app.pen_btn.selected)
+        self.assertEqual(
+            self.app.pen_btn.style.elevation[ft.ControlState.SELECTED], 4
+        )
+        self.app.set_tool("marker")
+        self.assertTrue(self.app.marker_btn.selected)
+        self.assertEqual(
+            self.app.marker_btn.style.shadow_color[ft.ControlState.SELECTED],
+            "#21756766",
+        )
 
     async def test_settings_migrate_open_library_and_preserve_background(self) -> None:
         self.app.import_book(str(self.create_pdf()))
@@ -179,6 +208,27 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.tool, "marker")
         self.assertEqual(self.app.marker_color, "#12B76A")
 
+    async def test_clear_page_strokes_saves_and_can_be_undone(self) -> None:
+        """一键清空本页笔迹但不影响文字批注，并可用撤销恢复。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        self.app.strokes = [{
+            "tool": "pen", "color": "#E45756", "width": 4,
+            "points": [[20, 30], [80, 90]],
+        }]
+        self.app.store.save_strokes(self.app.book.id, self.app.page_index, self.app.strokes)
+        self.app.store.add_text_annotation(self.app.book.id, self.app.page_index, "note", "保留的文字批注")
+        self.app.update_canvas()
+
+        self.app.clear_current_page_strokes()
+
+        self.assertEqual(self.app.strokes, [])
+        self.assertEqual(self.app.store.get_strokes(self.app.book.id, self.app.page_index), [])
+        self.assertEqual(len(self.app.store.text_annotations(self.app.book.id, self.app.page_index)), 1)
+        self.app.undo()
+        self.assertEqual(len(self.app.strokes), 1)
+        self.assertEqual(len(self.app.store.get_strokes(self.app.book.id, self.app.page_index)), 1)
+
     async def test_pen_pressure_updates_the_active_stroke_width(self) -> None:
         """笔压事件改变当前画笔段宽度，缺少压力事件时仍使用默认粗细。"""
         self.app.import_book(str(self.create_pdf()))
@@ -227,6 +277,23 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(slow_pressure, 0.65)
         self.assertLess(fast_pressure, slow_pressure)
         self.assertEqual(self.app.active_stroke["pressures"], [0.65, slow_pressure, fast_pressure])
+
+    async def test_flet_pan_events_await_stroke_updates(self) -> None:
+        """Flet 手势转发必须等待异步回调，否则画笔只会显示起笔点。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        transform = self.app.drawing_view.transform
+
+        def pointer(x, y):
+            return SimpleNamespace(local_x=transform.to_view(x, y)[0],
+                                   local_y=transform.to_view(x, y)[1])
+
+        detector = self.app.drawing_view.detector
+        await detector.on_pan_down(pointer(40, 50))
+        await detector.on_pan_update(pointer(140, 50))
+        self.assertEqual(len(self.app.active_stroke["points"]), 2)
+        self.assertGreater(len(self.app.drawing_view.ink.shapes), 1)
+        await detector.on_pan_end(pointer(140, 50))
 
     async def test_mouse_mode_does_not_create_strokes_and_alt_scroll_zooms(self) -> None:
         self.app.import_book(str(self.create_pdf()))
@@ -278,8 +345,8 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         start = SimpleNamespace(global_position=SimpleNamespace(x=500.0, y=300.0))
         update = SimpleNamespace(global_position=SimpleNamespace(x=560.0, y=340.0))
         canvas._begin_page_pan(start)
-        canvas._update_pointer(update)
-        canvas._end_pointer(update)
+        await canvas._update_pointer(update)
+        await canvas._end_pointer(update)
         self.assertNotEqual(canvas.pan_offset, (0.0, 0.0))
         self.assertEqual(self.app.strokes, [])
 
@@ -290,9 +357,8 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         Image.new("RGB", (80, 40), "red").save(source)
         attachment = self.app.store.add_attachment(self.app.book.id, 0, str(source))
         self.app.load_page()
-        image_detector = self.app.drawing_view.attachment_detectors[attachment.id]
         event = SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120))
-        image_detector.on_scroll(event)
+        self.app.reader_scroll_detector.on_scroll(event)
         self.assertEqual(self.app.page_index, 1)
 
     async def test_alt_scroll_zoom_works_outside_mouse_mode(self) -> None:
@@ -301,15 +367,42 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.app.set_tool("marker")
         self.app.alt_pressed = True
         previous_zoom = self.app.drawing_view.zoom
-        self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120)))
+        event = SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120))
+        self.app.reader_scroll_detector.on_scroll(event)
         self.assertGreater(self.app.drawing_view.zoom, previous_zoom)
         # 松开 Alt 后系统即时状态优先，即使页面缓存仍为 True 也应恢复翻页。
         with patch("main.is_alt_pressed", return_value=False):
             zoom_after = self.app.drawing_view.zoom
-            self.app.on_canvas_scroll(SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120)))
+            self.app.reader_scroll_detector.on_scroll(
+                SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120))
+            )
             self.assertEqual(self.app.page_index, 1)
         self.assertEqual(self.app.drawing_view.zoom, 1.0)
         self.assertNotEqual(zoom_after, self.app.drawing_view.zoom)
+
+    async def test_scroll_after_zoom_changes_page_without_full_page_refresh(self) -> None:
+        """缩放后松开 Alt 滚轮翻页时不整页刷新，滚轮监听器保持挂载。"""
+        self.app.import_book(str(self.create_pdf()))
+        self.session.get_page_patch()
+        scroll_detector = self.app.reader_scroll_detector
+        self.app.alt_pressed = True
+        self.app.on_canvas_scroll(
+            SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=-120))
+        )
+        self.assertGreater(self.app.drawing_view.zoom, 1.0)
+
+        self.app.alt_pressed = False
+        with patch("main.is_alt_pressed", return_value=False):
+            with patch.object(self.app.page, "update") as full_page_update:
+                scroll_detector.on_scroll(
+                    SimpleNamespace(scroll_delta=SimpleNamespace(x=0, y=120))
+                )
+
+        self.assertEqual(self.app.page_index, 1)
+        self.assertIs(self.app.canvas_host.content, scroll_detector)
+        self.assertIs(scroll_detector.content, self.app.drawing_view.control)
+        self.assertTrue(full_page_update.called)
+        self.assertTrue(all(call.args for call in full_page_update.call_args_list))
 
     async def test_continuous_image_drag_saves_only_on_release(self) -> None:
         """走真实的 Flet 事件解码与控件回调，连续移动后翻页仍保留最终位置。"""

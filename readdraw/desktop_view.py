@@ -24,6 +24,20 @@ def icon_button(icon, tooltip, callback, **kwargs):
                          icon_color=INK, width=36, height=36, **kwargs)
 
 
+def tool_button(icon, tooltip, callback, selected=False):
+    """用选中态阴影明确显示当前绘画工具。"""
+    selected_state = ft.ControlState.SELECTED
+    hovered_state = ft.ControlState.HOVERED
+    default_state = ft.ControlState.DEFAULT
+    style = ft.ButtonStyle(
+        bgcolor={selected_state: "#E3EFE7", default_state: "#FFFFFF"},
+        elevation={selected_state: 4, hovered_state: 1, default_state: 0},
+        shadow_color={selected_state: "#21756766", hovered_state: "#10182822",
+                      default_state: "#00000000"},
+    )
+    return icon_button(icon, tooltip, callback, selected=selected, style=style)
+
+
 def empty_reader(app):
     return ft.Column(
         [
@@ -44,18 +58,23 @@ def empty_reader(app):
 
 def build_toolbar(app):
     """Two bounded rows avoid Wrap + Expanded and unpredictable toolbar height."""
+    app.first_btn = icon_button(ft.Icons.FIRST_PAGE, "回到首页", app.go_to_first_page, disabled=True)
     app.prev_btn = icon_button(ft.Icons.CHEVRON_LEFT_ROUNDED, "上一页", lambda e: app.go_page(-1), disabled=True)
     app.next_btn = icon_button(ft.Icons.CHEVRON_RIGHT_ROUNDED, "下一页", lambda e: app.go_page(1), disabled=True)
+    app.last_btn = icon_button(ft.Icons.LAST_PAGE, "去到末尾页", app.go_to_last_page, disabled=True)
     app.page_input = ft.TextField(value="", width=48, height=34, dense=True,
         content_padding=ft.Padding.all(6), text_size=12, text_align=ft.TextAlign.CENTER,
         on_submit=app.jump_page, border_color=LINE, border_radius=7)
-    app.pen_btn = icon_button(ft.Icons.DRAW_OUTLINED, "画笔", lambda e: app.set_tool("pen"), selected=True)
-    app.mouse_btn = icon_button(ft.Icons.PAN_TOOL_OUTLINED, "鼠标", lambda e: app.set_tool("mouse"))
-    app.eraser_btn = icon_button(ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_tool("eraser"))
-    app.marker_btn = icon_button(ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_tool("marker"))
+    app.pen_btn = tool_button(ft.Icons.DRAW_OUTLINED, "画笔", lambda e: app.set_tool("pen"), selected=True)
+    app.mouse_btn = tool_button(ft.Icons.PAN_TOOL_OUTLINED, "鼠标", lambda e: app.set_tool("mouse"))
+    app.eraser_btn = tool_button(ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_tool("eraser"))
+    app.marker_btn = tool_button(ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_tool("marker"))
     app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", app.open_text_dialog)
     app.image_btn = icon_button(ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED, "插入图片", app.open_image_picker)
     app.sync_btn = icon_button(ft.Icons.LAN_OUTLINED, "局域网同步", app.toggle_sync)
+    app.clear_strokes_btn = icon_button(
+        ft.Icons.DELETE_SWEEP_OUTLINED, "清除本页笔迹", app.clear_current_page_strokes
+    )
     app.thickness_slider = ft.Slider(min=2, max=16, divisions=7, value=4, width=94,
         active_color=ACCENT, on_change=app.change_thickness, tooltip="画笔粗细")
     tools = ft.Row([
@@ -64,11 +83,12 @@ def build_toolbar(app):
         ft.Row([app.color_button(c) for c in ("#FFEB3B", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")], spacing=3),
         app.thickness_slider,
         ft.Container(expand=True),
+        app.clear_strokes_btn,
         icon_button(ft.Icons.UNDO_ROUNDED, "撤销", app.undo),
         icon_button(ft.Icons.REDO_ROUNDED, "恢复", app.redo),
     ], spacing=1)
     navigation = ft.Row([
-        app.prev_btn, app.page_input, app.next_btn, app.page_label,
+        app.first_btn, app.prev_btn, app.page_input, app.next_btn, app.last_btn, app.page_label,
         ft.Container(expand=True),
         icon_button(ft.Icons.FIT_SCREEN_OUTLINED, "适合窗口", app.fit_page),
         icon_button(ft.Icons.DOWNLOAD_OUTLINED, "导出本页 PNG", app.export_png), app.sync_btn,

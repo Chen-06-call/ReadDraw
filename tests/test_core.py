@@ -1,5 +1,6 @@
 """Fast, dependency-light checks for the first release's core services."""
 
+import asyncio
 import tempfile
 import io
 import unittest
@@ -198,8 +199,10 @@ class CoreServiceTests(unittest.TestCase):
         canvas.set_page(Image.new("RGB", (400, 400), "white"), [], [])
         canvas.set_zoom(2.0)
         canvas._begin_page_pan(SimpleNamespace(global_position=SimpleNamespace(x=100.0, y=100.0)))
-        canvas._update_pointer(SimpleNamespace(global_position=SimpleNamespace(x=-1000.0, y=-1000.0)))
-        canvas._end_pointer()
+        asyncio.run(canvas._update_pointer(
+            SimpleNamespace(global_position=SimpleNamespace(x=-1000.0, y=-1000.0))
+        ))
+        asyncio.run(canvas._end_pointer())
         self.assertLessEqual(canvas.transform.left + canvas.transform.width, canvas.viewport[0] + 0.001)
         self.assertLessEqual(canvas.transform.top + canvas.transform.height, canvas.viewport[1] + 0.001)
         self.assertTrue(canvas.reset_view())
