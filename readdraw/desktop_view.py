@@ -268,7 +268,95 @@ def build_desktop(app):
     app.reader_workspace = ft.Row(
         [app.library_panel, center, app.notes_panel], expand=True, spacing=0
     )
-    app.drawing_workspace = ft.Container(expand=True, bgcolor="#F5F7F6")
+
+    # 独立绘画工作区：工具栏和画布分开构建，后续增加图层或导出格式时只需扩展此处。
+    app.free_pen_btn = tool_button(
+        ft.Icons.DRAW_OUTLINED, "画笔", lambda e: app.set_free_tool("pen"), selected=True
+    )
+    app.free_marker_btn = tool_button(
+        ft.Icons.HIGHLIGHT_ROUNDED, "荧光笔", lambda e: app.set_free_tool("marker")
+    )
+    app.free_eraser_btn = tool_button(
+        ft.Icons.CLEANING_SERVICES_OUTLINED, "橡皮擦", lambda e: app.set_free_tool("eraser")
+    )
+    app.free_shape_btn = ft.PopupMenuButton(
+        icon=ft.Icons.FORMAT_SHAPES_OUTLINED,
+        tooltip="选择形状",
+        icon_color=INK,
+        icon_size=19,
+        width=36,
+        height=36,
+        padding=0,
+        elevation=6,
+        shadow_color="#10182833",
+        items=[
+            ft.PopupMenuItem(
+                content=name,
+                checked=shape == app.free_board.shape_type,
+                on_click=lambda event, selected=shape: app.select_free_shape(selected),
+            )
+            for shape, name in SHAPE_TYPES.items()
+        ],
+    )
+    app.free_color_buttons = [
+        ft.Container(
+            width=23,
+            height=23,
+            bgcolor=color,
+            border_radius=12,
+            border=ft.Border.all(2, "#FFFFFF"),
+            tooltip=f"颜色 {color}",
+            on_click=lambda event, selected=color: app.set_free_color(selected),
+        )
+        for color in ("#217567", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")
+    ]
+    app.free_thickness_slider = ft.Slider(
+        min=1, max=24, divisions=23, value=5, width=120,
+        active_color=ACCENT, on_change=app.change_free_thickness,
+        tooltip="画笔粗细",
+    )
+    app.free_drawing_status = label("画笔：按住鼠标拖动即可绘制", 11)
+    free_navigation = ft.Row(
+        [
+            app.free_pen_btn,
+            app.free_marker_btn,
+            app.free_eraser_btn,
+            app.free_shape_btn,
+            ft.VerticalDivider(width=12, color=LINE),
+            ft.Row(app.free_color_buttons, spacing=3),
+            app.free_thickness_slider,
+            ft.Container(expand=True),
+            icon_button(ft.Icons.UNDO_ROUNDED, "撤销", app.free_undo),
+            icon_button(ft.Icons.REDO_ROUNDED, "恢复", app.free_redo),
+            icon_button(ft.Icons.DELETE_SWEEP_OUTLINED, "清空画布", app.free_clear),
+            icon_button(ft.Icons.DOWNLOAD_OUTLINED, "导出 PNG", app.free_export_png),
+        ],
+        spacing=2,
+    )
+    app.drawing_toolbar = ft.Container(
+        content=ft.Column(
+            [free_navigation, ft.Divider(height=1, color=LINE), app.free_drawing_status],
+            spacing=3,
+        ),
+        bgcolor="#FFFFFF",
+        padding=ft.Padding.symmetric(horizontal=14, vertical=7),
+        border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
+        height=91,
+    )
+    app.drawing_workspace = ft.Column(
+        [
+            app.drawing_toolbar,
+            ft.Container(
+                content=app.free_board.control,
+                expand=True,
+                bgcolor="#F5F7F6",
+                padding=16,
+                on_size_change=app.resize_free_canvas,
+            ),
+        ],
+        expand=True,
+        spacing=0,
+    )
     app.reading_nav = ft.FilledButton(
         "阅读", icon=ft.Icons.AUTO_STORIES_OUTLINED,
         on_click=lambda event: app.show_workspace("reading"),

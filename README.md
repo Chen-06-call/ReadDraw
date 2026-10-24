@@ -21,6 +21,12 @@ ReadDraw 是一个使用 Python + Flet 开发的本地 PDF / EPUB 阅读与绘�
 
 ## 运行
 
+### v0.2.0 绘画工作区完善
+
+- 新增独立绘画工作区，提供实时画笔、荧光笔、橡皮擦、形状、颜色和粗细调节。
+- 支持撤销、恢复、清空画布和 PNG 导出，绘画状态与阅读页分离。
+- 荧光笔采用低透明度合成，长时间停留也不会遮住正文。
+
 ### v0.1.12 可选翻页动画
 
 - 设置中可启用或关闭翻页动画，并选择水平滑入、柔和淡入或轻微缩放。
@@ -180,7 +186,7 @@ python main.py
 
 ```powershell
 python -m pip install -r requirements-build.txt
-.\build_windows.ps1 -Version v0.1.12
+.\build_windows.ps1 -Version v0.2.0
 ```
 
 脚本会生成 `dist\ReadDraw.exe`，并在 `release` 目录生成固定名称的 `ReadDraw.exe`、`ReadDraw.exe.sha256` 和 `update.json`。每次成功构建后会清理旧的版本号命名产物，避免误上传过期文件。如果希望生成便于分发的文件夹版本：
@@ -192,26 +198,26 @@ Windows 版暂时停用资源管理器拖入功能，避免向 Flet 原生窗口
 桌面包排除了可选的 `pymupdf.layout` / ONNX 布局分析组件，PDF 显示和文字搜索使用 MuPDF。这样可以避免不必要的模型加载和相关本机组件启动崩溃。
 
 ```powershell
-.\build_windows.ps1 -Version v0.1.12 -OneDir
+.\build_windows.ps1 -Version v0.2.0 -OneDir
 ```
 
 ## 远程更新发布
 
-推送 `v0.1.12` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
+推送 `v0.2.0` 形式的 tag 后，GitHub Actions 会在 Windows runner 上构建桌面程序，并自动创建 GitHub Release，上传 exe、SHA256 和 `update.json`。标签版本须与 `readdraw/version.py` 的默认版本一致，否则构建会拒绝发布。桌面端点击“检查更新”会读取仓库的最新 Release；发现新版本后，在打包运行模式下可下载 exe、替换当前程序并重启。
 
 ```powershell
 git add .
-git commit -m "Prepare ReadDraw v0.1.12"
+git commit -m "Prepare ReadDraw v0.2.0"
 git push origin main
-git tag v0.1.12
-git push origin v0.1.12
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions 文件位于 `.github/workflows/release.yml`。源码运行时只支持检查版本，不会替换 Python 环境。
 
-也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.1.12`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
+也可以先把本次修改推送到默认分支，再在 GitHub 网页打开 **Actions → Build and release ReadDraw → Run workflow**，选择包含修复的分支，版本填写 `v0.2.0`。重跑旧标签的失败任务仍然使用旧提交，不会自动包含新的依赖修复。
 
-如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.1.12`）：
+如需手动在 Release 中上传，请使用本次构建产生的以下四个文件，发布标签填写对应版本（本次为 `v0.2.0`）：
 
 - `release/ReadDraw-Setup.exe`：安装包，供首次安装。
 - `release/ReadDraw.exe`：主程序，供免安装运行与自动更新。

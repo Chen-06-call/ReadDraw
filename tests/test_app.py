@@ -62,10 +62,11 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.session.page.window.maximized)
 
     async def test_reading_and_drawing_workspaces_keep_reader_state(self) -> None:
-        """绘画入口显示空白页，返回阅读时仍保留书籍与翻页状态。"""
+        """绘画入口显示独立画板，返回阅读时仍保留书籍与翻页状态。"""
         self.assertEqual(self.app.workspace, "reading")
         self.assertIs(self.app.workspace_switcher.content, self.app.reader_workspace)
-        self.assertFalse(self.app.drawing_workspace.content)
+        self.assertEqual(len(self.app.drawing_workspace.controls), 2)
+        self.assertIs(self.app.drawing_workspace.controls[1].content, self.app.free_board.control)
         self.app.import_book(str(self.create_pdf()))
         self.app.go_page(1)
         self.assertEqual(self.app.page_index, 1)

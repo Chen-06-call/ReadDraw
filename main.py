@@ -36,6 +36,8 @@ from readdraw.drawing import (
     SHAPE_TYPES, clone_strokes, compose_page, mouse_speed_pressure,
     normalize_pressure, point_near_stroke, shape_points,
 )
+from readdraw.free_drawing import FreeDrawingBoard
+from readdraw.drawing_draft import DrawingDraft
 from readdraw.models import Book
 from readdraw.reader import open_document, render_page
 from readdraw.settings_view import create_settings_dialog
@@ -108,6 +110,13 @@ class ReadDrawApp:
         self._pressure_pointer: tuple[float, float] | None = None
         self._pressure_sample_time: float | None = None
         self.workspace = "reading"
+        # 独立绘画画板不绑定书籍，切换工作区时可以保留自己的草稿状态。
+        self.free_draft = DrawingDraft(lambda: config.APP_DIR / "drawing.json")
+        self.free_board = FreeDrawingBoard(on_change=self.save_free_draft)
+        try:
+            self.free_board.restore(self.free_draft.load())
+        except (OSError, ValueError, TypeError) as exc:
+            logging.getLogger("readdraw").warning("无法恢复绘画草稿：%s", exc)
         self.directory_picker = ft.FilePicker()
         self.data_path_text = ft.Text(str(config.APP_DIR), size=10, color="#667085", selectable=True)
         self.settings_path_text = ft.Text(str(config.APP_DIR), size=12, color="#667085", selectable=True)
@@ -167,6 +176,91 @@ class ReadDrawApp:
         self.reading_nav.update()
         self.drawing_nav.update()
         self.reading_actions.update()
+
+    def _refresh_free_tool_buttons(self) -> None:
+        """同步独立绘画工具栏的选中状态，避免在多个回调中重复写 UI 逻辑。"""
+        buttons = {
+            "pen": self.free_pen_btn,
+            "marker": self.free_marker_btn,
+            "eraser": self.free_eraser_btn,
+            "shape": self.free_shape_btn,
+        }
+        for tool, button in buttons.items():
+            selected = tool == self.free_board.tool
+            if hasattr(button, "selected"):
+                button.selected = selected
+            if tool == "shape":
+                button.bgcolor = "#E3EFE7" if selected else "#FFFFFF"
+                button.elevation = 4 if selected else 0
+                button.shadow_color = "#21756766" if selected else "#00000000"
+        for shape, item in zip(SHAPE_TYPES, self.free_shape_btn.items):
+            item.checked = shape == self.free_board.shape_type
+
+    def save_free_draft(self) -> None:
+        """每次操作完成后自动保存，写入失败显示提示而不结束程序。"""
+        try:
+            self.free_draft.save(self.free_board.strokes)
+        except (OSError, ValueError) as exc:
+            logging.getLogger("readdraw").exception("绘画草稿保存失败")
+            self.show_error(f"绘画草稿保存失败：{exc}")
+
+    def set_free_tool(self, tool: str) -> None:
+        """切换独立画板工具，并在状态栏给出当前工具提示。"""
+        if not self.free_board.set_tool(tool):
+            return
+        self._refresh_free_tool_buttons()
+        self.free_drawing_status.value = {
+            "pen": "画笔：按住鼠标拖动即可绘制",
+            "marker": "荧光笔：使用半透明颜色标记内容",
+            "eraser": "橡皮擦：点击或拖动删除附近笔迹",
+            "shape": f"形状：{SHAPE_TYPES[self.free_board.shape_type]}，按住 Ctrl 可约束比例",
+        }[tool]
+        self.page.update()
+
+    def select_free_shape(self, shape: str) -> None:
+        """选择独立画板的形状并自动切换到形状工具。"""
+        if self.free_board.set_shape(shape):
+            self.set_free_tool("shape")
+
+    def set_free_color(self, color: str) -> None:
+        self.free_board.set_color(color)
+        self.free_drawing_status.value = f"画笔颜色：{color}"
+        self.page.update()
+
+    def change_free_thickness(self, event: Any) -> None:
+        self.free_board.set_thickness(getattr(event.control, "value", 5))
+
+    def free_undo(self, _=None) -> None:
+        if self.free_board.undo():
+            self.free_drawing_status.value = "已撤销上一笔"
+            self.page.update()
+
+    def free_redo(self, _=None) -> None:
+        if self.free_board.redo():
+            self.free_drawing_status.value = "已恢复上一笔"
+            self.page.update()
+
+    def free_clear(self, _=None) -> None:
+        if self.free_board.clear():
+            self.free_drawing_status.value = "已清空绘画画布"
+            self.page.update()
+
+    def free_export_png(self, _=None) -> None:
+        """导出独立绘画画布，异常只显示在状态栏，不让桌面程序退出。"""
+        try:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            target = config.APP_DIR / f"ReadDraw-绘画-{stamp}.png"
+            path = self.free_board.export_png(target)
+        except (OSError, ValueError) as exc:
+            logging.getLogger("readdraw").exception("独立画布导出失败")
+            self.show_error(f"绘画导出失败：{exc}")
+            return
+        self.free_drawing_status.value = f"已导出：{path}"
+        self.page.update()
+
+    def resize_free_canvas(self, event: Any) -> None:
+        """响应绘画区域尺寸变化，让导出图片与当前画布大小一致。"""
+        self.free_board.set_viewport(max(1, float(event.width) - 32), max(1, float(event.height) - 32))
 
     def toggle_bookmark(self, _=None) -> None:
         """已有书签时删除；新建时展开可选备注编辑区。"""
@@ -245,6 +339,12 @@ class ReadDrawApp:
         key = str(getattr(event, "key", "")).lower()
         self.alt_pressed = bool(getattr(event, "alt", False)) or key in {"alt", "alt left", "alt right"}
         self.control_pressed = bool(getattr(event, "ctrl", False))
+        if self.workspace == "drawing":
+            if self.control_pressed and key == "z":
+                self.free_undo()
+            elif self.control_pressed and key == "y":
+                self.free_redo()
+            return
         normalized_key = key.replace(" ", "").replace("_", "")
         if normalized_key in {"arrowleft", "left"}:
             self.go_page(-1)
@@ -977,6 +1077,7 @@ class ReadDrawApp:
         logger = logging.getLogger("readdraw")
         try:
             self.finish_drawing()
+            self.save_free_draft()
         except Exception:
             logging.getLogger("readdraw").exception("关闭时保存笔迹失败")
         try:

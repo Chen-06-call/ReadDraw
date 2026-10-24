@@ -5,12 +5,13 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
+import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / ".build-deps" / "workspace-verification"
 OUTPUT.mkdir(parents=True, exist_ok=True)
-RUN = Path(tempfile.mkdtemp(prefix="run-", dir=OUTPUT))
+RUN = OUTPUT / f"run-{uuid.uuid4().hex}"
+RUN.mkdir(parents=True, exist_ok=True)
 os.environ["APPDATA"] = str(RUN)
 os.environ["LOCALAPPDATA"] = str(RUN)
 os.environ["READDRAW_DATA_DIR"] = str(RUN / "library")
@@ -51,8 +52,16 @@ async def verify(page: ft.Page) -> None:
         (OUTPUT / "page-transition.png").write_bytes(await asyncio.wait_for(page.take_screenshot(), 15))
         await asyncio.sleep(0.35)
         assert app.page_index == 1 and app.canvas_host.offset == (0, 0)
-        REPORT.update(success=True, page=2, workspace=app.workspace,
-                      animation_duration_ms=220, drawing_page_blank=not app.drawing_workspace.content)
+        REPORT.update(
+            success=True,
+            page=2,
+            workspace=app.workspace,
+            animation_duration_ms=220,
+            drawing_workspace_ready=(
+                len(app.drawing_workspace.controls) == 2
+                and app.drawing_workspace.controls[1].content is app.free_board.control
+            ),
+        )
     except Exception as exc:
         REPORT["error"] = repr(exc)
     finally:

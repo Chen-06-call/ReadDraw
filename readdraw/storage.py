@@ -6,7 +6,7 @@ import json
 import base64
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pathlib import Path
@@ -14,6 +14,18 @@ from pathlib import Path
 from . import config
 from .models import Attachment, Book, TextAnnotation
 from .image_import import save_attachment_image
+
+
+def _normalise_timestamp(value: Any) -> str:
+    """把不同客户端写入的 ISO 时间统一为 UTC 微秒格式。"""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        parsed = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return parsed.isoformat(timespec="microseconds")
 
 
 class Store:
@@ -27,6 +39,7 @@ class Store:
         self.attachment_dir = config.ATTACHMENTS_DIR if self.database_path is None else self.database_path.parent / "attachments"
         self.db = sqlite3.connect(database_path)
         self.db.row_factory = sqlite3.Row
+        self._last_timestamp = datetime.min.replace(tzinfo=timezone.utc)
         self.db.execute("""CREATE TABLE IF NOT EXISTS books (
             id TEXT PRIMARY KEY, title TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
             pages INTEGER NOT NULL, current_page INTEGER NOT NULL DEFAULT 0,
@@ -55,6 +68,14 @@ class Store:
         if "note" not in bookmark_columns:
             self.db.execute("ALTER TABLE bookmarks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
         self.db.commit()
+
+    def _timestamp(self) -> str:
+        """返回严格递增的 UTC 时间戳，避免快速操作时同步顺序相同。"""
+        current = datetime.now(timezone.utc)
+        if current <= self._last_timestamp:
+            current = self._last_timestamp + timedelta(microseconds=1)
+        self._last_timestamp = current
+        return current.isoformat(timespec="microseconds")
 
     def _migrate_books(self) -> None:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(books)")}
@@ -98,7 +119,7 @@ class Store:
         self.db.execute("""INSERT INTO bookmarks(book_id,page,deleted,note,updated_at)
             VALUES(?,?,0,?,?) ON CONFLICT(book_id,page) DO UPDATE SET
             deleted=0, note=excluded.note, updated_at=excluded.updated_at""",
-            (book_id, page, note.strip(), datetime.now(timezone.utc).isoformat(timespec="microseconds")))
+            (book_id, page, note.strip(), self._timestamp()))
         self.db.commit()
 
     def delete_bookmark(self, book_id: str, page: int) -> bool:
@@ -110,7 +131,7 @@ class Store:
             return False
         self.db.execute("""UPDATE bookmarks SET deleted=1, updated_at=?
             WHERE book_id=? AND page=?""",
-            (datetime.now(timezone.utc).isoformat(timespec="microseconds"), book_id, page))
+            (self._timestamp(), book_id, page))
         self.db.commit()
         return True
 
