@@ -36,6 +36,8 @@ async def verify(page: ft.Page) -> None:
     try:
         app.show_workspace("drawing")
         await asyncio.sleep(2)
+        assert len(app.free_shape_btn.items) == 13
+        assert len(app.free_quick_color_buttons) == 6
         board = app.free_board
         board.set_thickness(20)
         for row, color in enumerate(("#217567", "#2E90FA")):

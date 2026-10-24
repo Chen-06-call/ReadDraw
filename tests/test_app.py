@@ -321,6 +321,23 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         await draw()
         self.assertEqual(self.app.free_board.strokes[0]["pressures"], [0.2, 0.9])
 
+    async def test_shape_library_and_palette_are_shared_across_workspaces(self) -> None:
+        """阅读和绘画下拉列表一致，快捷色会同步更新另一界面的选色入口。"""
+        from readdraw.drawing import QUICK_COLORS
+
+        reader_shapes = [item.content for item in self.app.shape_btn.items]
+        drawing_shapes = [item.content for item in self.app.free_shape_btn.items]
+        self.assertEqual(reader_shapes, drawing_shapes)
+        self.assertEqual(len(reader_shapes), 13)
+        self.assertEqual(len(self.app.free_quick_color_buttons), len(QUICK_COLORS))
+        self.app.free_quick_color_buttons[2].on_click(None)
+        self.assertEqual(self.app.color, QUICK_COLORS[2])
+        self.assertEqual(self.app.free_board.color, QUICK_COLORS[2])
+        self.assertEqual(self.app.color_picker_button.icon_color, QUICK_COLORS[2])
+        self.assertEqual(self.app.free_color_palette.icon_color, QUICK_COLORS[2])
+        self.app.open_reader_color_picker()
+        self.assertEqual(self.app.reader_color_picker.color, QUICK_COLORS[2])
+
     async def test_auto_saved_session_restores_reading_page_and_workspace(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.app.go_page(1)
@@ -499,7 +516,7 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_shape_dropdown_draws_live_shape_and_saves_for_undo(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.session.get_page_patch()
-        self.assertEqual(len(self.app.shape_btn.items), 7)
+        self.assertEqual(len(self.app.shape_btn.items), 13)
         self.app.select_shape("triangle")
 
         transform = self.app.drawing_view.transform

@@ -7,7 +7,7 @@ in the application controller; drawing coordinates stay in canvas_view.py.
 import flet as ft
 
 from .version import APP_TAG
-from .drawing import SHAPE_TYPES
+from .drawing import QUICK_COLORS, SHAPE_TYPES
 
 ACCENT = "#217567"
 INK = "#233C3A"
@@ -92,6 +92,11 @@ def build_toolbar(app):
             for shape, name in SHAPE_TYPES.items()
         ],
     )
+    app.color_picker_button = ft.IconButton(
+        icon=ft.Icons.PALETTE_OUTLINED, tooltip="打开色盘",
+        icon_color=app.color, icon_size=20, width=36, height=36,
+        on_click=app.open_reader_color_picker,
+    )
     app.note_btn = icon_button(ft.Icons.EDIT_NOTE_ROUNDED, "文字批注", app.open_text_dialog)
     app.image_btn = icon_button(ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED, "插入图片", app.open_image_picker)
     app.sync_btn = icon_button(ft.Icons.LAN_OUTLINED, "局域网同步", app.toggle_sync)
@@ -104,7 +109,8 @@ def build_toolbar(app):
         app.mouse_btn, app.pen_btn, app.eraser_btn, app.marker_btn, app.shape_btn,
         app.note_btn, app.image_btn,
         ft.VerticalDivider(width=12, color=LINE),
-        ft.Row([app.color_button(c) for c in ("#FFEB3B", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")], spacing=3),
+        ft.Row([app.color_button(c) for c in QUICK_COLORS], spacing=3),
+        app.color_picker_button,
         app.thickness_slider,
         ft.Container(expand=True),
         app.clear_strokes_btn,
@@ -297,6 +303,15 @@ def build_desktop(app):
             for shape, name in SHAPE_TYPES.items()
         ],
     )
+    app.free_quick_color_buttons = [
+        ft.Container(
+            width=21, height=21, bgcolor=color, border_radius=11,
+            border=ft.Border.all(2, "#FFFFFF"),
+            tooltip=f"快捷颜色 {color}",
+            on_click=lambda event, selected=color: app.set_free_color(selected),
+        )
+        for color in QUICK_COLORS
+    ]
     app.free_color_palette = ft.IconButton(
         icon=ft.Icons.PALETTE_OUTLINED, tooltip="打开色盘",
         icon_color=app.free_board.color, icon_size=22, width=36, height=36,
@@ -315,6 +330,7 @@ def build_desktop(app):
             app.free_eraser_btn,
             app.free_shape_btn,
             ft.VerticalDivider(width=12, color=LINE),
+            ft.Row(app.free_quick_color_buttons, spacing=2),
             app.free_color_palette,
             app.free_thickness_slider,
             ft.Container(expand=True),

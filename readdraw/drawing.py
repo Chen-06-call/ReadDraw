@@ -24,7 +24,25 @@ SHAPE_TYPES = {
     "arrow": "箭头",
     "triangle": "三角形",
     "diamond": "菱形",
+    "rounded_rectangle": "圆角矩形",
+    "pentagon": "五边形",
+    "hexagon": "六边形",
+    "star": "五角星",
+    "heart": "爱心",
+    "cross": "十字",
 }
+QUICK_COLORS = ("#FFEB3B", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")
+
+
+def _regular_polygon(cx: float, cy: float, radius_x: float, radius_y: float,
+                     sides: int, rotation: float = -math.pi / 2) -> list[list[float]]:
+    """生成闭合正多边形，供五边形、六边形和星形复用。"""
+    points = [
+        [cx + radius_x * math.cos(rotation + index * math.tau / sides),
+         cy + radius_y * math.sin(rotation + index * math.tau / sides)]
+        for index in range(sides)
+    ]
+    return points + [points[0]]
 
 
 def shape_points(shape: str, start: tuple[float, float],
@@ -44,9 +62,24 @@ def shape_points(shape: str, start: tuple[float, float],
     left, right = sorted((x1, x2))
     top, bottom = sorted((y1, y2))
     width, height = right - left, bottom - top
-    if shape in {"rectangle", "triangle", "diamond"}:
+    center_x, center_y = (left + right) / 2, (top + bottom) / 2
+    if shape in {"rectangle", "triangle", "diamond", "rounded_rectangle"}:
         if shape == "rectangle":
             points = [(left, top), (right, top), (right, bottom), (left, bottom)]
+        elif shape == "rounded_rectangle":
+            radius = min(width, height) * 0.2
+            points = []
+            for center_x, center_y, start_angle in (
+                (right - radius, top + radius, -math.pi / 2),
+                (right - radius, bottom - radius, 0),
+                (left + radius, bottom - radius, math.pi / 2),
+                (left + radius, top + radius, math.pi),
+            ):
+                points.extend(
+                    (center_x + radius * math.cos(start_angle + step * math.pi / 2 / 8),
+                     center_y + radius * math.sin(start_angle + step * math.pi / 2 / 8))
+                    for step in range(9)
+                )
         elif shape == "triangle":
             # 从上向下拖动绘制正三角形，反向拖动则将尖端翻到下方。
             if y2 >= y1:
@@ -58,6 +91,40 @@ def shape_points(shape: str, start: tuple[float, float],
                       ((left + right) / 2, bottom), (left, (top + bottom) / 2)]
         points.append(points[0])
         return [[x, y] for x, y in points]
+
+    if shape in {"pentagon", "hexagon", "star"}:
+        radius_x, radius_y = width / 2, height / 2
+        if shape == "star":
+            points = []
+            for index in range(10):
+                radius = 1.0 if index % 2 == 0 else 0.42
+                angle = -math.pi / 2 + index * math.tau / 10
+                points.append([center_x + radius_x * radius * math.cos(angle),
+                               center_y + radius_y * radius * math.sin(angle)])
+            return points + [points[0]]
+        sides = 5 if shape == "pentagon" else 6
+        return _regular_polygon(center_x, center_y, radius_x, radius_y, sides)
+
+    if shape == "heart":
+        # 参数方程形成平滑爱心，起点与终点闭合，缩放后仍保持边界在拖动框内。
+        points = []
+        for index in range(65):
+            angle = math.tau * index / 64
+            x = 16 * math.sin(angle) ** 3
+            y = -(13 * math.cos(angle) - 5 * math.cos(2 * angle)
+                  - 2 * math.cos(3 * angle) - math.cos(4 * angle))
+            points.append([center_x + x * width / 34, center_y + y * height / 34])
+        return points
+
+    if shape == "cross":
+        arm_x, arm_y = width * 0.25, height * 0.25
+        points = [(left + arm_x, top), (right - arm_x, top),
+                  (right - arm_x, center_y - arm_y), (right, center_y - arm_y),
+                  (right, center_y + arm_y), (right - arm_x, center_y + arm_y),
+                  (right - arm_x, bottom), (left + arm_x, bottom),
+                  (left + arm_x, center_y + arm_y), (left, center_y + arm_y),
+                  (left, center_y - arm_y), (left + arm_x, center_y - arm_y)]
+        return [[x, y] for x, y in points + [points[0]]]
 
     if shape == "circle":
         return [[(left + right) / 2 + width / 2 * math.cos(index * math.tau / 48),

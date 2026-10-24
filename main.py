@@ -318,9 +318,20 @@ class ReadDrawApp:
 
     def set_free_color(self, color: str) -> None:
         self.free_board.set_color(color)
+        self.color = color
+        self.marker_color = color
         self.free_color_palette.icon_color = color
+        self.color_picker_button.icon_color = color
         self.free_drawing_status.value = f"画笔颜色：{color}"
         self.page.update()
+
+    def open_reader_color_picker(self, _=None) -> None:
+        """阅读工具栏使用与绘画工作区相同的色盘和共享颜色状态。"""
+        current = self.marker_color if self.tool == "marker" else self.color
+        self.reader_color_picker = ColorPicker(
+            current, self.set_color, self.page.pop_dialog,
+        )
+        self.page.show_dialog(self.reader_color_picker.dialog)
 
     def open_free_color_picker(self, _=None) -> None:
         """打开可连续选色的色盘，确认后同步画笔颜色和工具栏预览。"""
@@ -1038,6 +1049,9 @@ class ReadDrawApp:
             self.marker_color = color
         else:
             self.color = color
+        self.free_board.set_color(color)
+        self.color_picker_button.icon_color = color
+        self.free_color_palette.icon_color = color
         if self.tool == "marker":
             self.set_tool("marker")
         elif self.tool == "shape":

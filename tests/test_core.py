@@ -61,6 +61,23 @@ class CoreServiceTests(unittest.TestCase):
         arrow = shape_points("arrow", start, end)
         self.assertEqual(arrow[1], arrow[3])
 
+    def test_extended_shape_library_has_valid_closed_geometry(self) -> None:
+        """阅读与绘画共用的新增图形均生成闭合且位于拖动范围内的几何。"""
+        from readdraw.drawing import SHAPE_TYPES
+
+        start, end = (20.0, 30.0), (180.0, 150.0)
+        new_shapes = ("rounded_rectangle", "pentagon", "hexagon", "star", "heart", "cross")
+        self.assertEqual(len(set(SHAPE_TYPES)), len(SHAPE_TYPES))
+        for shape in new_shapes:
+            with self.subTest(shape=shape):
+                points = shape_points(shape, start, end)
+                self.assertEqual(points[0], points[-1])
+                self.assertGreaterEqual(min(point[0] for point in points), start[0] - 1e-6)
+                self.assertLessEqual(max(point[0] for point in points), end[0] + 1e-6)
+                self.assertGreaterEqual(min(point[1] for point in points), start[1] - 1e-6)
+                self.assertLessEqual(max(point[1] for point in points), end[1] + 1e-6)
+                self.assertGreater(len(points), 5)
+
     def test_ctrl_constrains_circle_and_rectangle_to_equal_dimensions(self) -> None:
         for start, end in (((10, 20), (70, 80)), ((70, 80), (10, 20)),
                            ((70, 20), (10, 80)), ((10, 80), (70, 20))):
