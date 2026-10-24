@@ -297,6 +297,30 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
             for control in dialog.content.controls
         ))
 
+    async def test_free_drawing_uses_pressure_and_color_palette(self) -> None:
+        """绘画工具栏提供色盘入口，独立画笔保存压力采样。"""
+        self.assertEqual(self.app.free_color_palette.tooltip, "打开色盘")
+        self.app.free_color_palette.on_click(None)
+        picker = self.app.free_color_picker
+        self.assertEqual(picker.color, self.app.free_board.color)
+        self.session.get_page_patch()
+        picker.hex_field.value = "不是颜色"
+        picker._apply()
+        self.assertTrue(picker.hex_field.error_text)
+        self.assertEqual(self.app.free_board.color, "#217567")
+        picker.hex_field.value = "#2E90FA"
+        picker._apply()
+        self.assertEqual(self.app.free_board.color, "#2E90FA")
+        self.assertEqual(self.app.free_color_palette.icon_color, "#2E90FA")
+
+        async def draw() -> None:
+            await self.app.free_board._start_pointer(SimpleNamespace(local_x=5, local_y=5, pressure=0.2))
+            await self.app.free_board._update_pointer(SimpleNamespace(local_x=15, local_y=15, pressure=0.9))
+            await self.app.free_board._end_pointer()
+
+        await draw()
+        self.assertEqual(self.app.free_board.strokes[0]["pressures"], [0.2, 0.9])
+
     async def test_auto_saved_session_restores_reading_page_and_workspace(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.app.go_page(1)

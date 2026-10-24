@@ -37,6 +37,7 @@ from readdraw.drawing import (
     normalize_pressure, point_near_stroke, shape_points,
 )
 from readdraw.free_drawing import FreeDrawingBoard
+from readdraw.color_picker import ColorPicker
 from readdraw.drawing_draft import DrawingDraft
 from readdraw.models import Book
 from readdraw.reader import open_document, render_page
@@ -303,7 +304,7 @@ class ReadDrawApp:
             return
         self._refresh_free_tool_buttons()
         self.free_drawing_status.value = {
-            "pen": "画笔：按住鼠标拖动即可绘制",
+            "pen": "画笔：支持数位笔压感；鼠标慢画粗、快画细",
             "marker": "荧光笔：使用半透明颜色标记内容",
             "eraser": "橡皮擦：点击或拖动删除附近笔迹",
             "shape": f"形状：{SHAPE_TYPES[self.free_board.shape_type]}，按住 Ctrl 可约束比例",
@@ -317,8 +318,16 @@ class ReadDrawApp:
 
     def set_free_color(self, color: str) -> None:
         self.free_board.set_color(color)
+        self.free_color_palette.icon_color = color
         self.free_drawing_status.value = f"画笔颜色：{color}"
         self.page.update()
+
+    def open_free_color_picker(self, _=None) -> None:
+        """打开可连续选色的色盘，确认后同步画笔颜色和工具栏预览。"""
+        self.free_color_picker = ColorPicker(
+            self.free_board.color, self.set_free_color, self.page.pop_dialog,
+        )
+        self.page.show_dialog(self.free_color_picker.dialog)
 
     def change_free_thickness(self, event: Any) -> None:
         self.free_board.set_thickness(getattr(event.control, "value", 5))

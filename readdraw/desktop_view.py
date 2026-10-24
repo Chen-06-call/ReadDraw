@@ -297,24 +297,17 @@ def build_desktop(app):
             for shape, name in SHAPE_TYPES.items()
         ],
     )
-    app.free_color_buttons = [
-        ft.Container(
-            width=23,
-            height=23,
-            bgcolor=color,
-            border_radius=12,
-            border=ft.Border.all(2, "#FFFFFF"),
-            tooltip=f"颜色 {color}",
-            on_click=lambda event, selected=color: app.set_free_color(selected),
-        )
-        for color in ("#217567", "#E45756", "#3857D6", "#12B76A", "#F79009", "#101828")
-    ]
+    app.free_color_palette = ft.IconButton(
+        icon=ft.Icons.PALETTE_OUTLINED, tooltip="打开色盘",
+        icon_color=app.free_board.color, icon_size=22, width=36, height=36,
+        on_click=app.open_free_color_picker,
+    )
     app.free_thickness_slider = ft.Slider(
         min=1, max=24, divisions=23, value=5, width=120,
         active_color=ACCENT, on_change=app.change_free_thickness,
         tooltip="画笔粗细",
     )
-    app.free_drawing_status = label("画笔：按住鼠标拖动即可绘制", 11)
+    app.free_drawing_status = label("画笔：支持数位笔压感；鼠标慢画粗、快画细", 11)
     free_navigation = ft.Row(
         [
             app.free_pen_btn,
@@ -322,7 +315,7 @@ def build_desktop(app):
             app.free_eraser_btn,
             app.free_shape_btn,
             ft.VerticalDivider(width=12, color=LINE),
-            ft.Row(app.free_color_buttons, spacing=3),
+            app.free_color_palette,
             app.free_thickness_slider,
             ft.Container(expand=True),
             icon_button(ft.Icons.UNDO_ROUNDED, "撤销", app.free_undo),

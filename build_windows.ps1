@@ -1,6 +1,6 @@
 ﻿param(
     [switch]$OneDir,
-    [string]$Version = "v0.2.1",
+    [string]$Version = "v0.2.2",
     [switch]$RequireInstaller
 )
 

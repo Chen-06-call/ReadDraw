@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,7 +22,9 @@ from .drawing import (
     SHAPE_TYPES,
     clone_strokes,
     compose_page,
+    mouse_speed_pressure,
     point_near_stroke,
+    pressure_width,
     shape_points,
 )
 from .keyboard_state import is_control_pressed
@@ -41,6 +44,10 @@ class FreeDrawingBoard:
         self.thickness = 5
         self.active_stroke: dict[str, Any] | None = None
         self.active_path: cv.Path | None = None
+        self._pressure_pointer: tuple[float, float] | None = None
+        self._pressure_sample_time: float | None = None
+        self._stroke_pressure = 0.65
+        self._device_pressure_active = False
         self.erasing = False
         self.viewport = (760.0, 560.0)
         # 未新建画布前跟随窗口；用户新建画布后固定为指定尺寸。
@@ -57,6 +64,10 @@ class FreeDrawingBoard:
             on_pan_update=self._update_pointer,
             on_pan_end=self._end_pointer,
             on_pan_cancel=self._cancel_pointer,
+            on_tap_up=self._end_pointer,
+            on_force_press_start=self._update_device_pressure,
+            on_force_press_peak=self._update_device_pressure,
+            on_force_press_update=self._update_device_pressure,
         )
         self.canvas = ft.Stack(
             [self.surface, self.ink, self.detector], expand=True,
@@ -135,11 +146,15 @@ class FreeDrawingBoard:
         elements.extend(cv.Path.LineTo(*point) for point in points[1:])
         opacity = float(stroke.get("opacity", 1.0))
         color = ft.Colors.with_opacity(max(0.0, min(1.0, opacity)), stroke.get("color", self.color))
+        width = float(stroke.get("width", self.thickness))
+        pressures = stroke.get("pressures", [])
+        if stroke.get("tool") == "pen" and len(pressures) == len(points):
+            width = pressure_width(width, sum(pressures) / len(pressures))
         return cv.Path(
             elements,
             paint=ft.Paint(
                 color=color,
-                stroke_width=float(stroke.get("width", self.thickness)),
+                stroke_width=width,
                 style=ft.PaintingStyle.STROKE,
                 stroke_cap=ft.StrokeCap.ROUND,
                 stroke_join=ft.StrokeJoin.ROUND,
@@ -150,9 +165,19 @@ class FreeDrawingBoard:
         """根据模型重建矢量路径，撤销、恢复和窗口调整都走同一条路径。"""
         self.ink.shapes = []
         for stroke in self.strokes:
-            path = self._path(stroke)
-            if path is not None:
-                self.ink.shapes.append(path)
+            points = stroke.get("points", [])
+            pressures = stroke.get("pressures", [])
+            if stroke.get("tool") == "pen" and len(points) > 1 and len(pressures) == len(points):
+                for index in range(len(points) - 1):
+                    segment = {**stroke, "points": points[index:index + 2],
+                               "pressures": pressures[index:index + 2]}
+                    path = self._path(segment)
+                    if path is not None:
+                        self.ink.shapes.append(path)
+            else:
+                path = self._path(stroke)
+                if path is not None:
+                    self.ink.shapes.append(path)
         self.active_path = self.ink.shapes[-1] if self.ink.shapes else None
 
     def _update_canvas(self) -> None:
@@ -174,6 +199,8 @@ class FreeDrawingBoard:
             return
         self._begin_history()
         self.active_stroke = None
+        self._device_pressure_active = False
+        self._stroke_pressure = 0.65
         self.erasing = self.tool == "eraser"
         if self.erasing:
             self._erase(point)
@@ -188,6 +215,7 @@ class FreeDrawingBoard:
                 "points": [list(point), list(point)],
             }
         else:
+            self._stroke_pressure = self._read_pressure(event, point, reset=True)
             stroke = {
                 "tool": self.tool,
                 "color": self.color,
@@ -195,6 +223,8 @@ class FreeDrawingBoard:
                 "opacity": MARKER_OPACITY if self.tool == "marker" else 1.0,
                 "points": [list(point)],
             }
+            if self.tool == "pen":
+                stroke["pressures"] = [self._stroke_pressure]
         self.active_stroke = stroke
         self.strokes.append(stroke)
         self.active_path = self._path(stroke)
@@ -219,11 +249,25 @@ class FreeDrawingBoard:
             self.active_path = self._path(stroke)
             self.ink.shapes[-1] = self.active_path
         else:
+            if stroke.get("tool") == "pen":
+                self._stroke_pressure = self._read_pressure(event, point)
             if list(point) == stroke["points"][-1]:
+                if stroke.get("tool") == "pen":
+                    self._update_device_pressure(event)
                 return
             stroke["points"].append(list(point))
-            # 每次只追加一个线段，保持整条荧光笔为同一条透明路径。
-            if self.active_path is not None:
+            if stroke.get("tool") == "pen":
+                stroke["pressures"].append(self._stroke_pressure)
+                segment = {**stroke, "points": stroke["points"][-2:],
+                           "pressures": stroke["pressures"][-2:]}
+                self.active_path = self._path(segment)
+                if len(stroke["points"]) == 2:
+                    # 首段替换起笔圆点，重载后的形状数量与实时绘制保持一致。
+                    self.ink.shapes[-1] = self.active_path
+                else:
+                    self.ink.shapes.append(self.active_path)
+            elif self.active_path is not None:
+                # 每次只追加一个线段，保持整条荧光笔为同一条透明路径。
                 self.active_path.elements.append(cv.Path.LineTo(*point))
         self._update_canvas()
 
@@ -231,11 +275,71 @@ class FreeDrawingBoard:
         self.active_stroke = None
         self.active_path = None
         self.erasing = False
+        self._device_pressure_active = False
+        self._pressure_pointer = None
+        self._pressure_sample_time = None
         if self.on_change:
             self.on_change()
 
     async def _cancel_pointer(self, _event: Any = None) -> None:
         await self._end_pointer(_event)
+
+    def _read_pressure(self, event: Any, point: tuple[float, float], reset: bool = False) -> float:
+        """优先读取数位笔压力；鼠标则根据移动速度平滑模拟压感。"""
+        device_pressure = getattr(event, "pressure", None)
+        if device_pressure is not None:
+            try:
+                value = float(device_pressure)
+                if math.isfinite(value) and 0 <= value <= 1:
+                    self._device_pressure_active = True
+                    self._stroke_pressure = value
+                    self._pressure_pointer = point
+                    self._pressure_sample_time = time.perf_counter()
+                    return value
+            except (TypeError, ValueError):
+                pass
+        if self._device_pressure_active:
+            # 压力和移动事件可能分开到达，沿用最近一次真实压力，避免误切换到鼠标模拟。
+            return self._stroke_pressure
+        sample_time = time.perf_counter()
+        if reset or self._pressure_pointer is None or self._pressure_sample_time is None:
+            self._pressure_pointer = point
+            self._pressure_sample_time = sample_time
+            return self._stroke_pressure
+        elapsed = max(0.008, min(0.1, sample_time - self._pressure_sample_time))
+        speed = math.dist(point, self._pressure_pointer) / elapsed
+        target = mouse_speed_pressure(speed)
+        self._stroke_pressure += (target - self._stroke_pressure) * 0.4
+        self._pressure_pointer = point
+        self._pressure_sample_time = sample_time
+        return self._stroke_pressure
+
+    def _update_device_pressure(self, event: Any) -> None:
+        """实时应用数位笔压力到当前绘画笔迹。"""
+        if self.active_stroke is None or self.active_stroke.get("tool") != "pen":
+            return
+        value = getattr(event, "pressure", None)
+        try:
+            pressure = float(value)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(pressure) or not 0 <= pressure <= 1:
+            return
+        self._device_pressure_active = True
+        self._stroke_pressure = pressure
+        if self.active_stroke["pressures"]:
+            self.active_stroke["pressures"][-1] = pressure
+        if len(self.active_stroke["points"]) > 1:
+            segment = {**self.active_stroke,
+                       "points": self.active_stroke["points"][-2:],
+                       "pressures": self.active_stroke["pressures"][-2:]}
+            path = self._path(segment)
+            if self.ink.shapes:
+                self.ink.shapes[-1] = path
+            self.active_path = path
+        elif self.active_path is not None:
+            self.active_path.paint.stroke_width = pressure_width(self.active_stroke["width"], pressure)
+        self._update_canvas()
 
     def _erase(self, point: tuple[float, float]) -> None:
         radius = max(10.0, self.thickness * 2.5)
@@ -315,6 +419,10 @@ class FreeDrawingBoard:
         self.active_stroke = None
         self.active_path = None
         self.erasing = False
+        self._pressure_pointer = None
+        self._pressure_sample_time = None
+        self._stroke_pressure = 0.65
+        self._device_pressure_active = False
         self.manual_size = False
         self.viewport = (760.0, 560.0)
         self._layout()

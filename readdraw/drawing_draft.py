@@ -45,6 +45,13 @@ class DrawingDraft:
             if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
                 raise ValueError("绘画草稿包含无效颜色")
             int(color[1:], 16)
+            pressures = stroke.get("pressures")
+            if pressures is not None and (
+                not isinstance(pressures, list) or len(pressures) != len(stroke["points"])
+                or any(not isinstance(value, (int, float)) or not math.isfinite(value)
+                       or not 0 <= value <= 1 for value in pressures)
+            ):
+                raise ValueError("绘画草稿包含无效压力采样")
         width = data.get("width")
         height = data.get("height")
         for name, value in (("width", width), ("height", height)):
