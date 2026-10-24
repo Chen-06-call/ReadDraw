@@ -16,11 +16,15 @@ class DrawingDraft:
 
     def load(self) -> list[dict]:
         """只接受有效的矢量笔迹，损坏的草稿由调用方报告。"""
+        return self.load_state()["strokes"]
+
+    def load_state(self) -> dict:
+        """读取画布状态；旧版只有笔迹时使用默认画布尺寸。"""
         path = self._path()
         if not path.exists():
-            return []
+            return {"strokes": [], "width": None, "height": None}
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("format") != 1:
+        if not isinstance(data, dict) or data.get("format") not in {1, 2}:
             raise ValueError("不支持的绘画草稿格式")
         strokes = data.get("strokes")
         if not isinstance(strokes, list):
@@ -41,15 +45,23 @@ class DrawingDraft:
             if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
                 raise ValueError("绘画草稿包含无效颜色")
             int(color[1:], 16)
-        return strokes
+        width = data.get("width")
+        height = data.get("height")
+        for name, value in (("width", width), ("height", height)):
+            if value is not None and (
+                not isinstance(value, (float, int)) or not math.isfinite(value) or not 100 <= value <= 10000
+            ):
+                raise ValueError(f"绘画草稿包含无效{name}")
+        return {"strokes": strokes, "width": width, "height": height}
 
-    def save(self, strokes: list[dict]) -> None:
+    def save(self, strokes: list[dict], width: float | None = None, height: float | None = None) -> None:
         """先写完整的新文件再替换，写入失败时保留上一份草稿。"""
         path = self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(
-            json.dumps({"format": 1, "strokes": strokes}, ensure_ascii=False, allow_nan=False),
+            json.dumps({"format": 2, "strokes": strokes, "width": width, "height": height},
+                       ensure_ascii=False, allow_nan=False),
             encoding="utf-8",
         )
         temporary.replace(path)

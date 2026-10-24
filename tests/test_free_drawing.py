@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from readdraw.free_drawing import FreeDrawingBoard
+from readdraw.drawing_draft import DrawingDraft
 
 
 class FreeDrawingBoardTests(unittest.TestCase):
@@ -87,6 +89,17 @@ class FreeDrawingBoardTests(unittest.TestCase):
         with Image.open(target) as image:
             self.assertEqual(image.size, (320, 240))
             self.assertEqual(image.format, "PNG")
+
+    def test_custom_canvas_size_is_persisted_and_old_draft_is_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "drawing.json"
+            draft = DrawingDraft(lambda: path)
+            self.assertTrue(self.board.set_canvas_size(1200, 800))
+            draft.save(self.board.strokes, *self.board.viewport)
+            state = draft.load_state()
+            self.assertEqual((state["width"], state["height"]), (1200.0, 800.0))
+            draft.save([])
+            self.assertEqual(draft.load(), [])
 
 
 if __name__ == "__main__":

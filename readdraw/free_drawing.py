@@ -43,6 +43,8 @@ class FreeDrawingBoard:
         self.active_path: cv.Path | None = None
         self.erasing = False
         self.viewport = (760.0, 560.0)
+        # 未新建画布前跟随窗口；用户新建画布后固定为指定尺寸。
+        self.manual_size = False
         self.on_change = on_change
 
         self.ink = cv.Canvas()
@@ -74,13 +76,35 @@ class FreeDrawingBoard:
 
     def set_viewport(self, width: float, height: float) -> None:
         """保存有效画布尺寸，避免 Flet 尚未完成布局时使用无限尺寸。"""
+        if self.manual_size:
+            return
         if math.isfinite(width) and math.isfinite(height) and width > 1 and height > 1:
             self.viewport = (width, height)
             self._layout()
             self.refresh()
 
+    def set_canvas_size(self, width: float, height: float, manual: bool = True) -> bool:
+        """设置独立画布尺寸，尺寸变更不会清除现有笔迹。"""
+        if not all(math.isfinite(value) for value in (width, height)):
+            return False
+        if not 100 <= width <= 10000 or not 100 <= height <= 10000:
+            return False
+        self.manual_size = manual
+        self.viewport = (float(round(width)), float(round(height)))
+        self._layout()
+        self.refresh()
+        return True
+
+    def use_window_size(self) -> None:
+        """恢复为跟随窗口的画布尺寸，下一次窗口布局时会自动适配。"""
+        self.manual_size = False
+
     def _layout(self) -> None:
         width, height = self.viewport
+        self.canvas.width = width
+        self.canvas.height = height
+        self.surface.width = width
+        self.surface.height = height
         self.ink.width = width
         self.ink.height = height
         self.detector.width = width
@@ -282,6 +306,19 @@ class FreeDrawingBoard:
         self.history.clear()
         self.redo_stack.clear()
         self._rebuild_paths()
+
+    def reset_to_default(self) -> None:
+        """恢复为默认的空白画布，不读取或覆盖磁盘中的旧草稿。"""
+        self.strokes = []
+        self.history.clear()
+        self.redo_stack.clear()
+        self.active_stroke = None
+        self.active_path = None
+        self.erasing = False
+        self.manual_size = False
+        self.viewport = (760.0, 560.0)
+        self._layout()
+        self._update_canvas()
 
     def export_png(self, path: str | Path) -> Path:
         """将当前画布导出为白底 PNG，并返回实际文件路径。"""

@@ -260,6 +260,86 @@ class AppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.app.canvas_host.animate_offset)
         self.assertEqual(self.app.canvas_host.opacity, 1)
 
+    async def test_custom_free_canvas_and_auto_save_setting(self) -> None:
+        self.assertTrue(self.app.apply_free_canvas_size(1200, 800))
+        self.assertEqual(self.app.free_board.viewport, (1200.0, 800.0))
+        self.assertTrue(self.app.free_board.manual_size)
+        self.assertTrue(self.app.change_auto_save(False))
+        self.assertFalse(self.app.auto_save_enabled)
+        self.assertFalse(config.get_setting("auto_save_enabled"))
+        self.app.free_board.strokes = [{
+            "tool": "pen", "color": "#217567", "width": 3,
+            "points": [[10, 10], [20, 20]],
+        }]
+        self.app.save_current_work()
+        self.assertEqual(self.app.free_draft.load(), self.app.free_board.strokes)
+
+    async def test_new_canvas_asks_before_discarding_existing_strokes(self) -> None:
+        self.app.free_board.strokes = [{
+            "tool": "pen", "color": "#217567", "width": 3,
+            "points": [[10, 10], [20, 20]],
+        }]
+        self.app.create_free_canvas()
+        confirm = self.app.page._dialogs.controls[-1]
+        self.assertIn("未保存", getattr(confirm.title, "value", ""))
+        self.assertEqual(len(confirm.actions), 3)
+        # 选择取消不会清空当前画布，也不会进入尺寸设置。
+        confirm.actions[0].on_click(None)
+        self.session.get_page_patch()
+        self.assertEqual(len(self.app.free_board.strokes), 1)
+
+    async def test_settings_contains_update_and_auto_save_controls(self) -> None:
+        self.app.open_settings()
+        dialog = self.app.page._dialogs.controls[-1]
+        self.assertIsInstance(dialog.content.controls[5], ft.Switch)
+        self.assertTrue(any(
+            isinstance(control, ft.OutlinedButton) and control.icon == ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED
+            for control in dialog.content.controls
+        ))
+
+    async def test_auto_saved_session_restores_reading_page_and_workspace(self) -> None:
+        self.app.import_book(str(self.create_pdf()))
+        self.app.go_page(1)
+        self.app.show_workspace("drawing")
+        self.app.save_current_work()
+        self.app.document.close()
+        self.app.document = None
+        self.app.store.close()
+        self.session.close()
+
+        connection = RecordingConnection()
+        session = Session(connection)
+        restored = ReadDrawApp(session.page)
+        session.get_page_patch()
+        self.assertEqual(restored.workspace, "drawing")
+        self.assertIsNotNone(restored.book)
+        self.assertEqual(restored.page_index, 1)
+        restored.document.close()
+        restored.store.close()
+        session.close()
+
+    async def test_disabled_auto_save_starts_with_blank_default_canvas(self) -> None:
+        """关闭自动保存后，重启不应恢复旧笔迹或自定义画布尺寸。"""
+        self.assertTrue(self.app.apply_free_canvas_size(1200, 800))
+        self.app.free_board.strokes = [{
+            "tool": "pen", "color": "#217567", "width": 3,
+            "points": [[10, 10], [20, 20]],
+        }]
+        self.app.save_current_work()
+        self.assertTrue(self.app.change_auto_save(False))
+        self.app.store.close()
+        self.session.close()
+
+        connection = RecordingConnection()
+        session = Session(connection)
+        restored = ReadDrawApp(session.page)
+        self.assertFalse(restored.auto_save_enabled)
+        self.assertEqual(restored.free_board.strokes, [])
+        self.assertEqual(restored.free_board.viewport, (760.0, 560.0))
+        self.assertFalse(restored.free_board.manual_size)
+        restored.store.close()
+        session.close()
+
     async def test_disabled_page_animation_keeps_navigation_working(self) -> None:
         self.app.import_book(str(self.create_pdf()))
         self.assertTrue(self.app.apply_page_animation(False, "slide"))

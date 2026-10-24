@@ -110,13 +110,24 @@ class ReadDrawApp:
         self._pressure_pointer: tuple[float, float] | None = None
         self._pressure_sample_time: float | None = None
         self.workspace = "reading"
+        self.auto_save_enabled = bool(config.get_setting(
+            "auto_save_enabled", config.DEFAULT_AUTO_SAVE_ENABLED
+        ))
+        self.last_session = config.load_settings()
         # 独立绘画画板不绑定书籍，切换工作区时可以保留自己的草稿状态。
         self.free_draft = DrawingDraft(lambda: config.APP_DIR / "drawing.json")
         self.free_board = FreeDrawingBoard(on_change=self.save_free_draft)
-        try:
-            self.free_board.restore(self.free_draft.load())
-        except (OSError, ValueError, TypeError) as exc:
-            logging.getLogger("readdraw").warning("无法恢复绘画草稿：%s", exc)
+        if self.auto_save_enabled:
+            try:
+                draft = self.free_draft.load_state()
+                self.free_board.restore(draft["strokes"])
+                if draft["width"] is not None and draft["height"] is not None:
+                    self.free_board.set_canvas_size(draft["width"], draft["height"])
+            except (OSError, ValueError, TypeError) as exc:
+                logging.getLogger("readdraw").warning("无法恢复绘画草稿：%s", exc)
+        else:
+            # 关闭自动保存后不读取上次的绘画草稿，保证每次启动都是空白大画布。
+            self.free_board.reset_to_default()
         self.directory_picker = ft.FilePicker()
         self.data_path_text = ft.Text(str(config.APP_DIR), size=10, color="#667085", selectable=True)
         self.settings_path_text = ft.Text(str(config.APP_DIR), size=12, color="#667085", selectable=True)
@@ -134,6 +145,7 @@ class ReadDrawApp:
         self.sync_server = SyncServer()
         self.pending_release: ReleaseInfo | None = None
         self.build()
+        self.restore_last_session()
 
     def build(self) -> None:
         build_desktop(self)
@@ -158,6 +170,7 @@ class ReadDrawApp:
         """切换阅读和绘画入口；阅读状态仍由同一工作区实例保存。"""
         if workspace not in {"reading", "drawing"} or workspace == self.workspace:
             return
+        self.save_current_work()
         self.workspace = workspace
         content = self.reader_workspace if workspace == "reading" else self.drawing_workspace
         self.workspace_switcher.content = content
@@ -172,10 +185,83 @@ class ReadDrawApp:
             elevation={ft.ControlState.DEFAULT: 2 if workspace == "drawing" else 0},
         )
         self.reading_actions.visible = workspace == "reading"
-        self.workspace_switcher.update()
-        self.reading_nav.update()
-        self.drawing_nav.update()
-        self.reading_actions.update()
+        for control in (
+            self.workspace_switcher, self.reading_nav,
+            self.drawing_nav, self.reading_actions,
+        ):
+            try:
+                control.update()
+            except RuntimeError:
+                # 启动恢复可能发生在 Flet 首次挂载控件之前。
+                pass
+
+    def save_session(self, force: bool = False) -> None:
+        """保存下次启动要恢复的工作区、书籍和阅读页。"""
+        if not self.auto_save_enabled and not force:
+            return
+        try:
+            config.save_settings(
+                last_workspace=self.workspace,
+                last_book_id=self.book.id if self.book else None,
+                last_page_index=self.page_index if self.book else 0,
+            )
+        except OSError as exc:
+            logging.getLogger("readdraw").exception("保存工作位置失败")
+            self.show_error(f"保存工作位置失败：{exc}")
+
+    def save_current_work(self, _=None) -> bool:
+        """显式保存绘画草稿和当前工作位置，关闭自动保存时也可使用。"""
+        try:
+            self.finish_drawing()
+            self.free_draft.save(
+                self.free_board.strokes,
+                self.free_board.viewport[0],
+                self.free_board.viewport[1],
+            )
+            self.save_session(force=True)
+            self.free_drawing_status.value = "当前工作已保存"
+            if not self._closed:
+                try:
+                    self.free_drawing_status.update()
+                except RuntimeError:
+                    # 绘画工作区尚未挂载到页面时只更新内存状态。
+                    pass
+            return True
+        except (OSError, ValueError) as exc:
+            logging.getLogger("readdraw").exception("保存当前工作失败")
+            self.show_error(f"保存当前工作失败：{exc}")
+            return False
+
+    def change_auto_save(self, enabled: bool) -> bool:
+        """保存自动保存偏好；关闭后保留显式保存按钮。"""
+        try:
+            config.save_settings(auto_save_enabled=bool(enabled))
+        except OSError as exc:
+            self.show_error(f"保存自动保存设置失败：{exc}")
+            return False
+        self.auto_save_enabled = bool(enabled)
+        if self.auto_save_enabled:
+            self.save_current_work()
+        return True
+
+    def restore_last_session(self) -> None:
+        """自动保存开启时恢复上次打开的书籍、页码和工作区。"""
+        if not self.auto_save_enabled:
+            return
+        book_id = self.last_session.get("last_book_id")
+        if book_id:
+            book = next((item for item in self.books if item.id == book_id), None)
+            if book is not None:
+                self.open_book(book)
+                try:
+                    page_index = int(self.last_session.get("last_page_index", book.current_page))
+                except (TypeError, ValueError):
+                    page_index = book.current_page
+                if self.document and 0 <= page_index < self.document.page_count:
+                    self.navigate_to_page(page_index)
+        workspace = self.last_session.get("last_workspace")
+        if workspace in {"reading", "drawing"} and workspace != self.workspace:
+            self.show_workspace(workspace)
 
     def _refresh_free_tool_buttons(self) -> None:
         """同步独立绘画工具栏的选中状态，避免在多个回调中重复写 UI 逻辑。"""
@@ -198,8 +284,15 @@ class ReadDrawApp:
 
     def save_free_draft(self) -> None:
         """每次操作完成后自动保存，写入失败显示提示而不结束程序。"""
+        if not self.auto_save_enabled:
+            return
         try:
-            self.free_draft.save(self.free_board.strokes)
+            self.free_draft.save(
+                self.free_board.strokes,
+                self.free_board.viewport[0],
+                self.free_board.viewport[1],
+            )
+            self.save_session()
         except (OSError, ValueError) as exc:
             logging.getLogger("readdraw").exception("绘画草稿保存失败")
             self.show_error(f"绘画草稿保存失败：{exc}")
@@ -261,6 +354,74 @@ class ReadDrawApp:
     def resize_free_canvas(self, event: Any) -> None:
         """响应绘画区域尺寸变化，让导出图片与当前画布大小一致。"""
         self.free_board.set_viewport(max(1, float(event.width) - 32), max(1, float(event.height) - 32))
+
+    def create_free_canvas(self, _=None) -> None:
+        """打开新建画布流程；已有笔迹时先询问是否保存。"""
+        if self.free_board.strokes:
+            def save_and_continue(_event=None) -> None:
+                if not self.save_current_work():
+                    return
+                self.page.pop_dialog()
+                self._show_free_canvas_size_dialog()
+
+            def discard_and_continue(_event=None) -> None:
+                self.page.pop_dialog()
+                self._show_free_canvas_size_dialog()
+
+            self.page.show_dialog(ft.AlertDialog(
+                modal=True,
+                title=ft.Text("当前画布有未保存内容"),
+                content=ft.Text("新建画布会清空当前笔迹，要先保存当前工作吗？"),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda e: self.page.pop_dialog()),
+                    ft.TextButton("不保存并新建", on_click=discard_and_continue),
+                    ft.FilledButton("保存并新建", icon=ft.Icons.SAVE_OUTLINED, on_click=save_and_continue),
+                ],
+            ))
+            return
+        self._show_free_canvas_size_dialog()
+
+    def _show_free_canvas_size_dialog(self) -> None:
+        """显示画布宽高设置窗口。"""
+        width, height = self.free_board.viewport
+        width_field = ft.TextField(label="宽度（像素）", value=str(int(width)), keyboard_type=ft.KeyboardType.NUMBER)
+        height_field = ft.TextField(label="高度（像素）", value=str(int(height)), keyboard_type=ft.KeyboardType.NUMBER)
+
+        def apply(_event=None) -> None:
+            try:
+                new_width = float(width_field.value or 0)
+                new_height = float(height_field.value or 0)
+            except (TypeError, ValueError):
+                self.show_error("画布宽度和高度必须是数字")
+                return
+            if not self.apply_free_canvas_size(new_width, new_height):
+                self.show_error("画布尺寸应在 100 到 10000 像素之间")
+                return
+            self.page.pop_dialog()
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("新建画布"),
+            content=ft.Column([width_field, height_field], tight=True, width=360),
+            actions=[
+                ft.TextButton("取消", on_click=lambda e: self.page.pop_dialog()),
+                ft.FilledButton("新建", icon=ft.Icons.ADD_TO_PHOTOS_OUTLINED, on_click=apply),
+            ],
+        ))
+
+    def apply_free_canvas_size(self, width: float, height: float) -> bool:
+        """应用画布尺寸并清空笔迹，供界面回调和自动化测试复用。"""
+        if not self.free_board.set_canvas_size(width, height):
+            return False
+        self.free_board.strokes = []
+        self.free_board.history.clear()
+        self.free_board.redo_stack.clear()
+        self.free_board._rebuild_paths()
+        self.free_board.refresh()
+        self.save_current_work()
+        self.free_drawing_status.value = f"已新建画布：{int(width)} × {int(height)} 像素"
+        self.page.update()
+        return True
 
     def toggle_bookmark(self, _=None) -> None:
         """已有书签时删除；新建时展开可选备注编辑区。"""
@@ -461,6 +622,7 @@ class ReadDrawApp:
             self.apply_page_animation,
             lambda event: self.page.pop_dialog(),
             self.page_animation_enabled, self.page_animation_type,
+            self.check_updates, self.change_auto_save, self.auto_save_enabled,
         )
         self.page.show_dialog(dialog)
 
@@ -1077,7 +1239,8 @@ class ReadDrawApp:
         logger = logging.getLogger("readdraw")
         try:
             self.finish_drawing()
-            self.save_free_draft()
+            if self.auto_save_enabled:
+                self.save_current_work()
         except Exception:
             logging.getLogger("readdraw").exception("关闭时保存笔迹失败")
         try:

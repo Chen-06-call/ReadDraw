@@ -17,6 +17,9 @@ def create_settings_dialog(
     close: Callable,
     page_animation_enabled: bool = config.DEFAULT_PAGE_ANIMATION_ENABLED,
     page_animation_type: str = DEFAULT_PAGE_ANIMATION,
+    check_updates: Callable[..., Awaitable[None]] | None = None,
+    change_auto_save: Callable[[bool], bool] | None = None,
+    auto_save_enabled: bool = config.DEFAULT_AUTO_SAVE_ENABLED,
 ) -> ft.AlertDialog:
     """Create fresh controls on each open, with the current saved preferences."""
     def select_background(event) -> None:
@@ -62,6 +65,21 @@ def create_settings_dialog(
         disabled=not page_animation_enabled,
     )
 
+    def toggle_auto_save(event) -> None:
+        nonlocal auto_save_enabled
+        enabled = bool(event.control.value)
+        if change_auto_save is None or change_auto_save(enabled):
+            auto_save_enabled = enabled
+            return
+        event.control.value = auto_save_enabled
+        event.control.update()
+
+    auto_save_switch = ft.Switch(
+        label="自动保存绘画和工作位置",
+        value=auto_save_enabled,
+        on_change=toggle_auto_save,
+    )
+
     return ft.AlertDialog(
         modal=True,
         title=ft.Text("设置"),
@@ -80,6 +98,15 @@ def create_settings_dialog(
                 ft.Divider(height=24, color="#EAECF0"),
                 animation_switch,
                 animation_type,
+                ft.Divider(height=24, color="#EAECF0"),
+                auto_save_switch,
+                ft.Text("关闭后仍可使用绘画区的“保存当前工作”按钮。", size=12, color="#667085"),
+                ft.Divider(height=24, color="#EAECF0"),
+                ft.OutlinedButton(
+                    "检查更新", icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+                    on_click=check_updates,
+                    disabled=check_updates is None,
+                ),
                 ft.Divider(height=24, color="#EAECF0"),
                 ft.Text("数据保存位置", weight=ft.FontWeight.W_600),
                 path_label,
